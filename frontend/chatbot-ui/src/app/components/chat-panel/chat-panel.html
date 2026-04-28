@@ -1,1 +1,4 @@
-<p>chat-panel works!</p>
+@if (open()) {
+  <p>Chat panel works</p>
+  <button (click)="onClose()">Close</button>
+}

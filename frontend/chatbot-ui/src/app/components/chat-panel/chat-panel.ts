@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, input, output } from '@angular/core';
 
 @Component({
   selector: 'app-chat-panel',
@@ -6,4 +6,11 @@ import { Component } from '@angular/core';
   templateUrl: './chat-panel.html',
   styleUrl: './chat-panel.scss',
 })
-export class ChatPanel {}
+export class ChatPanel {
+  open = input(false);
+  closed = output<void>();
+
+  onClose() {
+    this.closed.emit();
+  }
+}
