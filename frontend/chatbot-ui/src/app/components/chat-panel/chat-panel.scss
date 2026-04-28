@@ -1,0 +1,30 @@
+.chat-panel {
+  position: fixed;
+  bottom: 90px;
+  right: 24px;
+  width: 320px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 12px;
+  z-index: 999;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.message-list {
+  min-height: 120px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+
+.input-row {
+  display: flex;
+  gap: 8px;
+}

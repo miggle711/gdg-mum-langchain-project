@@ -1,4 +1,29 @@
 @if (open()) {
-  <p>Chat panel works</p>
-  <button (click)="onClose()">Close</button>
+  <div class="chat-panel">
+    <div class="chat-header">
+      <strong>Chat</strong>
+      <button (click)="onClose()">Close</button>
+    </div>
+
+    <div class="message-list">
+      @for (message of messages; track $index) {
+        <div class="message">
+          <strong>{{ message.role }}:</strong> {{ message.text }}
+        </div>
+      }
+
+      @if (isLoading) {
+        <div>Thinking...</div>
+      }
+    </div>
+
+    <div class="input-row">
+      <input
+        [(ngModel)]="userMessage"
+        placeholder="Type a message..."
+        (keyup.enter)="sendMessage()"
+      />
+      <button (click)="sendMessage()">Send</button>
+    </div>
+  </div>
 }
