@@ -1,29 +1,44 @@
-@if (open()) {
-  <div class="chat-panel">
-    <div class="chat-header">
-      <strong>Chat</strong>
-      <button (click)="onClose()">Close</button>
+<div class="chat-header">
+  <div class="chat-header-info">
+    <div class="avatar">
+      <mat-icon>auto_awesome</mat-icon>
     </div>
-
-    <div class="message-list">
-      @for (message of messages; track $index) {
-        <div class="message">
-          <strong>{{ message.role }}:</strong> {{ message.text }}
-        </div>
-      }
-
-      @if (isLoading) {
-        <div>Thinking...</div>
-      }
-    </div>
-
-    <div class="input-row">
-      <input
-        [(ngModel)]="userMessage"
-        placeholder="Type a message..."
-        (keyup.enter)="sendMessage()"
-      />
-      <button (click)="sendMessage()">Send</button>
+    <div class="agent-info">
+      <span class="agent-name">Chat Assistant</span>
+      <span class="agent-status">Online</span>
     </div>
   </div>
-}
+  <button mat-icon-button (click)="onClose()">
+    <mat-icon>close</mat-icon>
+  </button>
+</div>
+
+<mat-divider></mat-divider>
+
+<div class="message-list" #messageList>
+  @if (messages.length === 0 && !isLoading) {
+    <p class="empty-state">How can I help you today?</p>
+  }
+  @for (message of messages; track $index) {
+    <div class="message" [class.user]="message.role === 'user'" [class.assistant]="message.role === 'assistant'">
+      {{ message.text }}
+    </div>
+  }
+  @if (isLoading) {
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+  }
+</div>
+
+<div class="input-row">
+  <mat-form-field appearance="outline" class="input-field">
+    <textarea matInput [(ngModel)]="userMessage" placeholder="Write your message…"
+      cdkTextareaAutosize cdkAutosizeMinRows="1" cdkAutosizeMaxRows="4"
+      maxlength="1000"
+      (keydown.enter)="onEnter($event)" [disabled]="isLoading"></textarea>
+    <mat-hint align="end">{{ userMessage.length }} / 1000</mat-hint>
+  </mat-form-field>
+  <button mat-icon-button class="send-btn" (click)="sendMessage()"
+    [disabled]="isLoading || !userMessage.trim()">
+    <mat-icon>arrow_upward</mat-icon>
+  </button>
+</div>

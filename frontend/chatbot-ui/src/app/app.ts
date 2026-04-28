@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component } from '@angular/core';
 import { ChatButton } from './components/chat-button/chat-button';
 import { ChatPanel } from './components/chat-panel/chat-panel';
 
@@ -9,13 +9,9 @@ import { ChatPanel } from './components/chat-panel/chat-panel';
   styleUrl: './app.scss',
 })
 export class App {
-  isChatOpen = signal(false);
+  isChatOpen = false;
 
   openChat() {
-    this.isChatOpen.set(true);
-  }
-
-  closeChat() {
-    this.isChatOpen.set(false);
+    this.isChatOpen = !this.isChatOpen;
   }
 }
