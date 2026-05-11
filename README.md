@@ -10,10 +10,9 @@ This project demonstrates stateful multi-turn conversations using LangChain and 
 
 **Backend:**
 
-- FastAPI (Python)
-- LangChain with ConversationChain
-- Google Gemini API (gemini-2.5-flash)
-- ConversationBufferMemory for conversation state
+- LangChain
+- PyDantic
+- FastAPI
 
 **Frontend:**
 
