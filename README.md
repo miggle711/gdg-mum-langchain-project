@@ -10,7 +10,9 @@ This repository contains the frontend UI for a chatbot experience built with Ang
 
 backend:
 
-- To be filled out
+- LangChain
+- PyDantic
+- FastAPI
 
 frontend:
 
