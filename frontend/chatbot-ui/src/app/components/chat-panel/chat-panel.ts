@@ -1,4 +1,4 @@
-import { Component, output, ViewChild, ElementRef, AfterViewChecked } from '@angular/core';
+import { Component, output, ViewChild, ElementRef, AfterViewChecked, ChangeDetectionStrategy, ChangeDetectorRef, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -23,8 +23,9 @@ import { Chat, ChatResponse } from '../../services/chat';
   ],
   templateUrl: './chat-panel.html',
   styleUrl: './chat-panel.scss',
+  changeDetection: ChangeDetectionStrategy.Default,
 })
-export class ChatPanel implements AfterViewChecked {
+export class ChatPanel implements AfterViewChecked, OnInit {
   closed = output<void>();
   @ViewChild('messageList') private messageList!: ElementRef;
 
@@ -33,7 +34,27 @@ export class ChatPanel implements AfterViewChecked {
   messages: { role: 'user' | 'assistant'; text: string }[] = [];
   private shouldScroll = false;
 
-  constructor(private chat: Chat) {}
+  constructor(private chat: Chat, private cdr: ChangeDetectorRef) {}
+
+  ngOnInit() {
+    this.initializeConversation();
+  }
+
+  private initializeConversation() {
+    this.chat.startConversation().subscribe({
+      next: (response) => {
+        console.log('Chat initialized, conversation ID:', response.conversation_id);
+        this.messages = [{ role: 'assistant', text: response.message }];
+        this.shouldScroll = true;
+        this.cdr.markForCheck();
+      },
+      error: (error) => {
+        console.error('Failed to start conversation:', error);
+        this.messages = [{ role: 'assistant', text: 'Failed to start chat. Please refresh and try again.' }];
+        this.cdr.markForCheck();
+      },
+    });
+  }
 
   ngAfterViewChecked() {
     if (this.shouldScroll) {
@@ -62,10 +83,29 @@ export class ChatPanel implements AfterViewChecked {
     this.isLoading = true;
     this.shouldScroll = true;
 
-    this.chat.send(text).subscribe((response: ChatResponse) => {
-      this.messages.push({ role: 'assistant', text: response.reply });
-      this.isLoading = false;
-      this.shouldScroll = true;
+    console.log('Sending message:', text);
+    console.log('Current messages:', this.messages);
+
+    this.chat.send(text).subscribe({
+      next: (response: ChatResponse) => {
+        console.log('Received response:', response);
+        console.log('Response reply:', response.reply);
+        this.messages.push({ role: 'assistant', text: response.reply });
+        console.log('Messages after push:', this.messages);
+        this.isLoading = false;
+        this.shouldScroll = true;
+        this.cdr.markForCheck();
+      },
+      error: (error) => {
+        console.log('Error received:', error);
+        this.messages.push({
+          role: 'assistant',
+          text: `Error: ${error.error?.detail || 'Failed to get response from server. Make sure the backend is running.'}`,
+        });
+        this.isLoading = false;
+        this.shouldScroll = true;
+        this.cdr.markForCheck();
+      },
     });
   }
 }
