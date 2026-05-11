@@ -1,63 +1,89 @@
 # gdg-mum-langchain-project
 
-A minimal frontend chatbot project for the GDG Monash Malaysia Tech AI Team.
+A LangChain-powered ecommerce customer service chatbot with Angular frontend and FastAPI backend, deployed with Docker.
 
 ## Overview
 
-This repository contains the frontend UI for a chatbot experience built with Angular. The app is packaged with Docker and served through nginx so it can run as a simple static web app locally.
+This project demonstrates stateful multi-turn conversations using LangChain and Google's Gemini API. The backend generates unique conversation IDs and maintains conversation memory, while the Angular frontend provides a clean chat UI. Conversations are preserved server-side, allowing the AI to maintain context across multiple messages.
 
 ## Tech Stack
 
-backend:
+**Backend:**
 
-- To be filled out
+- FastAPI (Python)
+- LangChain with ConversationChain
+- Google Gemini API (gemini-2.5-flash)
+- ConversationBufferMemory for conversation state
 
-frontend:
+**Frontend:**
 
-- Angular
+- Angular 19+
 - TypeScript
-- Docker
-- nginx
+- RxJS Observables
+- Angular Material
+
+**Deployment:**
+
+- Docker & Docker Compose
+- nginx (reverse proxy + API routing)
+
+## Architecture
+
+1. **Frontend** (Angular) makes HTTP request to `/api/chat/start` on component load
+2. **Backend** (FastAPI) generates a unique conversation ID (UUID) and initializes a LangChain conversation chain
+3. **Frontend** stores the ID and sends user messages to `/api/chat` with the ID
+4. **Backend** maintains conversation history in memory and uses LangChain to generate contextual responses
+5. System prompt provides ecommerce customer service instructions to the AI
+
+### Conversation Flow
+
+![Chat Service Sequence Diagram](docs/Chat%20Service%20Conversation-2026-05-11-155722.png)
 
 ## Features
 
-- Floating chat button
-- Chat panel UI
-- Message input and display
-- Dockerized frontend build
-- nginx serving the compiled app
+- Stateful conversations with server-side memory management
+- Real-time message display with auto-scrolling
+- Ecommerce customer service system prompt
+- Conversation history tracking
+- Error handling and user feedback
+- Full Docker deployment
 
-## Running with Docker
+## Getting Started
 
-1. Make sure Docker Desktop is running.
-2. From the project root, run:
+### Prerequisites
+- Docker Desktop
+- `.env` file in project root with `GOOGLE_API_KEY` set
+
+### Run Locally
 
 ```bash
 docker compose up --build
 ```
 
-3. Open:
+Then open `http://localhost` in your browser.
 
-```text
-http://localhost
-```
+### Setup Guides
 
-## Project Structure
+- **[DOCKER_SETUP.md](DOCKER_SETUP.md)** — Docker prerequisites, environment setup, troubleshooting
+- **[LANGCHAIN_SETUP.md](LANGCHAIN_SETUP.md)** — Backend setup, API keys, testing
 
-```text
-frontend/chatbot-ui/
-README.md
-```
 
-## nginx
+## Key Files
 
-The frontend container uses nginx to:
+- **backend/app/main.py**: REST API endpoints and LangChain conversation logic
+- **frontend/chatbot-ui/src/app/services/chat.ts**: Service layer for HTTP requests
+- **frontend/chatbot-ui/src/app/components/chat-panel/chat-panel.ts**: Chat UI with message handling
+- **docker-compose.yml**: Orchestrates backend and frontend containers
 
-- serve the built Angular app
-- handle single-page app routing
-- proxy API requests under /api to the backend service
-- keep the deployment lightweight
+## API Endpoints
 
-## Notes
+- `POST /chat/start` - Initialize conversation, returns `conversation_id` and welcome message
+- `POST /chat` - Send message, returns AI response
+- `GET /conversation/{id}` - Retrieve conversation history
+- `DELETE /conversation/{id}` - Delete conversation
+- `GET /conversations` - List all conversations
 
-This repository is currently focused on the frontend UI and Docker setup.
+## Development Notes
+
+- Conversations are stored in-memory; they reset on server restart
+- The system prompt is configured for ecommerce customer service
