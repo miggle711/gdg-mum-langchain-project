@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+lc_foundations.egg-info/PKG-INFO
+lc_foundations.egg-info/SOURCES.txt
+lc_foundations.egg-info/dependency_links.txt
+lc_foundations.egg-info/requires.txt
+lc_foundations.egg-info/top_level.txt
