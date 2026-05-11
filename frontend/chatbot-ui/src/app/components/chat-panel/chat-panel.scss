@@ -59,13 +59,32 @@
 }
 
 .message-list {
-  height: 360px;
+  flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 16px;
   box-sizing: border-box;
+  min-height: 200px;
+  max-height: 500px;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--mat-sys-outline);
+    border-radius: 3px;
+
+    &:hover {
+      background: var(--mat-sys-on-surface-variant);
+    }
+  }
 }
 
 .empty-state {
@@ -81,6 +100,8 @@
   word-break: break-word;
   font-size: 14px;
   line-height: 1.55;
+  display: block;
+  white-space: pre-wrap;
 }
 
 .message.assistant {
