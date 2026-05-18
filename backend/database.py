@@ -112,3 +112,123 @@ def seed_db():
     conn.commit()
     conn.close()
 
+
+def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Query products based on filters.
+
+    Supported filters:
+    - category: category name or ID
+    - price_max: maximum price
+    - price_min: minimum price
+    - rating_min: minimum rating
+    - search: search term in product name
+
+    Args:
+
+        filters (Dict[str, Any]): Dictionary of optional filter criteria.
+
+        Example:
+
+            filters = {
+
+                "category": "Electronics",   # category name or ID
+
+                "price_min": 100,
+
+                "price_max": 500,
+
+                "rating_min": 4.5,
+
+                "search": "Laptop"
+
+            }
+
+    Returns:
+
+        List[Dict[str, Any]]: List of matching products with category info.
+
+        Example:
+
+            [
+
+                {
+
+                    "id": "prod-1",
+
+                    "name": "Wireless Headphones",
+
+                    "price": 49.99,
+
+                    "originalPrice": 79.99,
+
+                    "rating": 4.5,
+
+                    "reviews": 128,
+
+                    "category_name": "Electronics"
+
+                }
+
+            ]
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    query = """
+        SELECT
+            p.id, p.name, p.price, p.originalPrice, p.rating, p.reviews,
+            c.name as category_name
+        FROM products p
+        JOIN categories c ON p.category_id = c.id
+        WHERE 1=1 
+    """
+    # where 1=1 is a common SQL trick to simplify appending additional conditions
+    # we can simply add "AND ..." without worrying about whether it's the first condition or not
+    # if there are no filters, it will just return all products no sweat
+    params = [] # we're using parameterized queries to prevent SQL injection and handle user input safely
+
+    if "category" in filters:
+        query += " AND (c.name = ? OR c.id = ?)"
+        # we allow filtering by either category name or ID for flexibility
+        params.extend([filters["category"], filters["category"]])
+
+    if "price_max" in filters:
+        query += " AND p.price <= ?"
+        # check for all products with price less than or equal to the specified max price
+        params.append(filters["price_max"])
+
+    if "price_min" in filters:
+        query += " AND p.price >= ?"
+        # check for all products with price greater than or equal to the specified min price
+        params.append(filters["price_min"])
+
+    if "rating_min" in filters:
+        query += " AND p.rating >= ?"
+        # check for all products with rating greater than or equal to the specified min rating
+        params.append(filters["rating_min"])
+
+    if "search" in filters:
+        query += " AND p.name LIKE ?"
+        # we use LIKE for simple substring search in product names
+        params.append(f"%{filters['search']}%")
+
+    # we order results by rating and number of reviews to show the best products first
+    query += " ORDER BY p.rating DESC, p.reviews DESC LIMIT 20"
+
+    cursor.execute(query, params)
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    return results
+
+def get_categories() -> List[Dict[str, Any]]:
+    """Get all product categories."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, icon FROM categories ORDER BY name")
+    # fetchall returns a list of rows
+    # convert each row to a dict for easier access in the frontend
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return results
