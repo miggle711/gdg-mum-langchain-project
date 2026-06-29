@@ -28,8 +28,7 @@ seed_db()
 app = FastAPI(title="LangChain Conversation API")
 
 class ConversationData(TypedDict):
-    agent: AgentExecutor # the agent executor that handles the conversation logic and tool calls
-    history: InMemoryChatMessageHistory # the chat history that keeps track of all messages in the conversation
+    history: InMemoryChatMessageHistory
 
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
 
@@ -59,6 +58,30 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable not set")
 
+# Shared singletons — created once at startup and reused across all conversations.
+# The LLM client, prompt, and AgentExecutor are stateless between calls;
+# per-conversation state lives entirely in the chat_history we pass in each invocation.
+_llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0.7,
+)
+
+_prompt = ChatPromptTemplate.from_messages([
+    ("system", ECOMMERCE_SYSTEM_PROMPT),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+
+_agent_executor = AgentExecutor(
+    agent=create_tool_calling_agent(_llm, PRODUCT_TOOLS, _prompt),
+    tools=PRODUCT_TOOLS,
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=5,
+)
+
 conversations = {}
 
 
@@ -75,30 +98,7 @@ class ChatResponse(BaseModel):
 
 def get_or_create_conversation(conversation_id: str) -> ConversationData:
     if conversation_id not in conversations:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=GOOGLE_API_KEY,
-            temperature=0.7,
-        )
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", ECOMMERCE_SYSTEM_PROMPT),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-
-        agent = create_tool_calling_agent(llm, PRODUCT_TOOLS, prompt)
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=PRODUCT_TOOLS,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5,
-        )
-
         conversations[conversation_id] = {
-            "agent": agent_executor,
             "history": InMemoryChatMessageHistory(),
         }
     return conversations[conversation_id]
@@ -113,10 +113,9 @@ def root():
 async def chat(request: ChatRequest) -> ChatResponse:
     try:
         conversation = get_or_create_conversation(request.conversation_id)
-        agent_executor = conversation["agent"]
         history = conversation["history"]
 
-        result = agent_executor.invoke({
+        result = _agent_executor.invoke({
             "input": request.message,
             "chat_history": history.messages,
         })
