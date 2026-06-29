@@ -1,160 +1,145 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationChain
-from langchain.prompts import PromptTemplate
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 import uuid
 from typing import Optional
 from dotenv import load_dotenv
 from typing import TypedDict
+import sys
 
-load_dotenv() # load the .env file to get environment variables like GOOGLE_API_KEY
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# define FastAPI application (the backend server for our conversation API)
+from database import init_db, seed_db
+from tools import PRODUCT_TOOLS
+
+load_dotenv()
+
+# initialize the database and seed it with sample data on startup
+# TODO: remove this when deploying to production and use proper database migrations instead. This is just for demo purposes to ensure the database is ready to use when the app starts.
+init_db()
+seed_db()
+
 app = FastAPI(title="LangChain Conversation API")
 
 class ConversationData(TypedDict):
-    # we define a typed dictionary to store the conversation chain and memory for each conversation ID
-    chain: ConversationChain 
-    memory: ConversationBufferMemory
+    agent: AgentExecutor # the agent executor that handles the conversation logic and tool calls
+    history: InMemoryChatMessageHistory # the chat history that keeps track of all messages in the conversation
 
-# System prompt for ecommerce customer service agent
-# this is prepended to the conversation history to provide context to the LLM about its role and responsibilities
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
 
 Your responsibilities:
 - Help customers find products by answering questions about our catalog
+- Use the available tools to search and filter products when customers ask
 - Provide information about product specifications, pricing, and availability
 
 Guidelines:
 - Always be polite, professional, and empathetic
-- If you don't know something about our specific products or policies, suggest they contact support
-
-Current conversation:"""
+- When describing products, include price, rating, and number of reviews
+- If you don't know something about our specific products or policies, suggest they contact support"""
 
 
 # middleware is used to hanlde CORS (Cross-Origin Resource Sharing) which allows our frontend 
 # (which may be served from a different origin) to make requests to this backend API without 
-# being blocked by the browser's same-origin policy
+# being blocked by the browser's same-origin poli
 app.add_middleware(
     CORSMiddleware,
-    # we allow all origins for simplicity, but when we deploy this, we will want to restrict this to only the frontend's origin for security reasons
-    allow_origins=["*"], 
-    # we allow credentials (like cookies, authorization headers, etc.) to be sent in cross-origin requests
+    allow_origins=["*"],
     allow_credentials=True,
-    # # we allow all HTTP methods (GET, POST, DELETE, etc.)
-    allow_methods=["*"], 
-    allow_headers=["*"], # we allow all headers (like Content-Type, Authorization, etc.
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# we load the Google API key from an environment variable for security reasons (so we don't hardcode it in our codebase)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable not set")
 
-# we will store conversations in memory using a dictionary where the keys are conversation IDs and the values are the conversation chains and memory objects
-# this is a simple in-memory store for demonstration purposes, but in a production application, we would want to use a more robust storage solution (like a database)
-#  to persist conversations across server restarts and scale better
 conversations = {}
 
 
-### Pydantic models for request and response validation ###
-# these models define the structure of the data we expect to receive in requests and send in responses
-# helps to validate incoming data and ensure our API is consistent and well-documented ;)
-class Message(BaseModel):
-    content: str
-
-class ChatRequest(BaseModel): # Model for requests to the /chat endpoint
+class ChatRequest(BaseModel):
     conversation_id: str
     message: str
-    system_prompt: Optional[str] = None  # Optional custom system prompt
+    system_prompt: Optional[str] = None
 
-class ChatResponse(BaseModel): # Model for responses from the /chat endpoint
+class ChatResponse(BaseModel):
     conversation_id: str
     response: str
     message_count: int
 
 
 def get_or_create_conversation(conversation_id: str) -> ConversationData:
-    """
-    Helper function to get an existing conversation chain and memory by conversation ID, or create a new one if it doesn't exist.
-    
-    args:
-        conversation_id (str): The unique identifier for the conversation.
-    returns:
-        ConversationData: A dictionary containing the conversation chain and memory objects for the given conversation ID.
-    """
     if conversation_id not in conversations:
-        # we create a new conversation chain and memory for this conversation ID if it doesn't exist
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
             google_api_key=GOOGLE_API_KEY,
-            temperature=0.7, # controls the randomness of the LLM's responses 
-        )
-        memory = ConversationBufferMemory() # store conversation history in memory
-
-        # Custom prompt template with adding the system prompt 
-        prompt_template = PromptTemplate(
-            # add the history (conversation history) and user input (latest user message)
-            input_variables=["history", "input"],
-            template=ECOMMERCE_SYSTEM_PROMPT + "\n{history}\nHuman: {input}\nAssistant:"
+            temperature=0.7,
         )
 
-        chain = ConversationChain( # interface between the LLM and the conversation memory
-            llm=llm,
-            memory=memory, # the memory object that will store the conversation history and provide it as context to the LLM for generating responses
-            prompt=prompt_template,
-            verbose=False, 
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", ECOMMERCE_SYSTEM_PROMPT),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
+
+        agent = create_tool_calling_agent(llm, PRODUCT_TOOLS, prompt)
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=PRODUCT_TOOLS,
+            verbose=True,
+            handle_parsing_errors=True,
+            max_iterations=5,
         )
-        # Store the conversation data in the dictionary with the conversation ID as the key
+
         conversations[conversation_id] = {
-            "chain": chain, 
-            "memory": memory,
+            "agent": agent_executor,
+            "history": InMemoryChatMessageHistory(),
         }
     return conversations[conversation_id]
 
 
 @app.get("/")
-def root(): 
-    # Simple health check endpoint, we can use this to verify that the backend server is running and responding to requests
+def root():
     return {"message": "LangChain Conversation Backend is running"}
 
 
-# async because we don't want to block the server while waiting for the LLM to generate a response, allowing it to handle multiple requests concurrently
-@app.post("/chat") # Endpoint to handle chat messages
+@app.post("/chat")
 async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    Handle chat messages for a specific conversation.
-    """
     try:
         conversation = get_or_create_conversation(request.conversation_id)
-        chain = conversation["chain"]
+        agent_executor = conversation["agent"]
+        history = conversation["history"]
 
-        # generate a response from the conversation chain using the input message from the request
-        response = chain.predict(input=request.message)
+        result = agent_executor.invoke({
+            "input": request.message,
+            "chat_history": history.messages,
+        })
+        response_text = result["output"]
 
-        print(f"DEBUG: Response from chain: '{response}'")
-        print(f"DEBUG: Response type: {type(response)}")
-        print(f"DEBUG: Response length: {len(str(response))}")
+        # Update history after successful invocation only
+        history.add_user_message(request.message)
+        history.add_ai_message(response_text)
 
-        # using pydantic model to validate and structure the response we send back to the frontend
         return ChatResponse(
             conversation_id=request.conversation_id,
-            response=response if response else "I apologize, but I'm having trouble generating a response at the moment.",
-            message_count=len(conversation["memory"].buffer.split("\n")) // 2, # Each message is stored as "Human: ...\nAI: ...\n", so we divide by 2 to get the number of exchanges
+            response=response_text or "I apologize, but I'm having trouble generating a response at the moment.",
+            message_count=len(history.messages) // 2,
         )
     except Exception as e:
-        print(f"DEBUG: Exception in chat: {str(e)}")
+        print(f"Exception in chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/chat/start") # Start a new conversation
+
+
+@app.post("/chat/start")
 def start_conversation() -> dict[str, str]:
-    # we generate a new unique conversation ID using uuid4 and create a new conversation chain and memory for that ID
     conversation_id = str(uuid.uuid4())
-    get_or_create_conversation(conversation_id) # this will create a new conversation chain and memory for the new conversation ID
+    get_or_create_conversation(conversation_id)
     return {
         "conversation_id": conversation_id,
         "message": "Welcome to our store! How can I help you find the perfect product today?"
@@ -163,15 +148,19 @@ def start_conversation() -> dict[str, str]:
 
 @app.get("/conversation/{conversation_id}")
 def get_conversation(conversation_id: str):
-
     if conversation_id not in conversations:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    conversation = conversations[conversation_id]
+    history = conversations[conversation_id]["history"]
+    messages_out = []
+    for msg in history.messages:
+        role = "human" if isinstance(msg, HumanMessage) else "ai"
+        messages_out.append({"role": role, "content": msg.content})
+
     return {
         "conversation_id": conversation_id,
-        "history": conversation["memory"].buffer,
-        "message_count": len(conversation["memory"].buffer.split("\n")) // 2,
+        "history": messages_out,
+        "message_count": len(history.messages) // 2,
     }
 
 
@@ -179,7 +168,6 @@ def get_conversation(conversation_id: str):
 def delete_conversation(conversation_id: str):
     if conversation_id not in conversations:
         raise HTTPException(status_code=404, detail="Conversation not found")
-
     del conversations[conversation_id]
     return {"message": "Conversation deleted"}
 
@@ -190,7 +178,7 @@ def list_conversations():
         "conversations": [
             {
                 "conversation_id": cid,
-                "message_count": len(conv["memory"].buffer.split("\n")) // 2,
+                "message_count": len(conv["history"].messages) // 2,
             }
             for cid, conv in conversations.items()
         ]
