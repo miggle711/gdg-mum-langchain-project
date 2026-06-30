@@ -4,16 +4,29 @@ services:
     ports:
       - "6379:6379"
 
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=gdg
+      - POSTGRES_PASSWORD=gdg
+      - POSTGRES_DB=ecommerce
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     depends_on:
       - redis
+      - postgres
     environment:
       - PYTHONUNBUFFERED=1
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://gdg:gdg@postgres:5432/ecommerce
       - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-gdg-mum-langchain-project}
@@ -26,3 +39,6 @@ services:
       - backend
     volumes:
       - ./frontend/chatbot-ui/nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  postgres_data:
