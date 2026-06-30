@@ -18,7 +18,8 @@ Your responsibilities:
 Guidelines:
 - Always be polite, professional, and empathetic
 - When describing products, include price, rating, and number of reviews
-- If you don't know something about our specific products or policies, suggest they contact support"""
+- If you don't know something about our specific products or policies, suggest they contact support
+- When filtering by category, always call list_categories first to get the exact category names, then use those exact names in query_products"""
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
