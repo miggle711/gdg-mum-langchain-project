@@ -1,6 +1,9 @@
 import sqlite3
 import os
+import json
+import redis
 from typing import List, Dict, Any
+from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 
 # Database file path (can be set via environment variable)
 DB_PATH = os.getenv("DB_PATH", "products.db")
@@ -232,3 +235,34 @@ def get_categories() -> List[Dict[str, Any]]:
     results = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return results
+
+
+# Redis connection pool — created once, reused across all requests
+_redis_pool = redis.ConnectionPool.from_url(
+    os.getenv("REDIS_URL", "redis://localhost:6379"),
+    decode_responses=True,
+    max_connections=20,
+)
+
+CONVERSATION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+
+
+def _get_redis() -> redis.Redis:
+    return redis.Redis(connection_pool=_redis_pool)
+
+
+def save_messages(conversation_id: str, messages: List[BaseMessage]) -> None:
+    """Serialize and save a conversation's messages to Redis."""
+    r = _get_redis()
+    key = f"conversation:{conversation_id}"
+    r.set(key, json.dumps(messages_to_dict(messages)), ex=CONVERSATION_TTL_SECONDS)
+
+
+def load_messages(conversation_id: str) -> List[BaseMessage]:
+    """Load and deserialize a conversation's messages from Redis. Returns [] if not found."""
+    r = _get_redis()
+    key = f"conversation:{conversation_id}"
+    data = r.get(key)
+    if data is None:
+        return []
+    return messages_from_dict(json.loads(data))

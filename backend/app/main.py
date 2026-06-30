@@ -3,19 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 import uuid
-from typing import Optional
+from typing import Optional, TypedDict
 from dotenv import load_dotenv
-from typing import TypedDict
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import init_db, seed_db
+from database import init_db, seed_db, save_messages, load_messages, _get_redis
 from tools import PRODUCT_TOOLS
 
 load_dotenv()
@@ -28,8 +27,8 @@ seed_db()
 app = FastAPI(title="LangChain Conversation API")
 
 class ConversationData(TypedDict):
-    agent: AgentExecutor # the agent executor that handles the conversation logic and tool calls
-    history: InMemoryChatMessageHistory # the chat history that keeps track of all messages in the conversation
+    history: InMemoryChatMessageHistory
+    is_new: bool
 
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
 
@@ -59,8 +58,29 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable not set")
 
-conversations = {}
+# Shared singletons — created once at startup and reused across all conversations.
+# The LLM client, prompt, and AgentExecutor are stateless between calls;
+# per-conversation state lives entirely in the chat_history we pass in each invocation.
+_llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0.7,
+)
 
+_prompt = ChatPromptTemplate.from_messages([
+    ("system", ECOMMERCE_SYSTEM_PROMPT),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+
+_agent_executor = AgentExecutor(
+    agent=create_tool_calling_agent(_llm, PRODUCT_TOOLS, _prompt),
+    tools=PRODUCT_TOOLS,
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=5,
+)
 
 class ChatRequest(BaseModel):
     conversation_id: str
@@ -74,34 +94,13 @@ class ChatResponse(BaseModel):
 
 
 def get_or_create_conversation(conversation_id: str) -> ConversationData:
-    if conversation_id not in conversations:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=GOOGLE_API_KEY,
-            temperature=0.7,
-        )
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", ECOMMERCE_SYSTEM_PROMPT),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-
-        agent = create_tool_calling_agent(llm, PRODUCT_TOOLS, prompt)
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=PRODUCT_TOOLS,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5,
-        )
-
-        conversations[conversation_id] = {
-            "agent": agent_executor,
-            "history": InMemoryChatMessageHistory(),
-        }
-    return conversations[conversation_id]
+    messages = load_messages(conversation_id)
+    history = InMemoryChatMessageHistory()
+    history.add_messages(messages)
+    return {
+        "history": history,
+        "is_new": len(messages) == 0,
+    }
 
 
 @app.get("/")
@@ -113,10 +112,9 @@ def root():
 async def chat(request: ChatRequest) -> ChatResponse:
     try:
         conversation = get_or_create_conversation(request.conversation_id)
-        agent_executor = conversation["agent"]
         history = conversation["history"]
 
-        result = agent_executor.invoke({
+        result = _agent_executor.invoke({
             "input": request.message,
             "chat_history": history.messages,
         })
@@ -125,6 +123,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Update history after successful invocation only
         history.add_user_message(request.message)
         history.add_ai_message(response_text)
+        save_messages(request.conversation_id, history.messages)
 
         return ChatResponse(
             conversation_id=request.conversation_id,
@@ -148,38 +147,41 @@ def start_conversation() -> dict[str, str]:
 
 @app.get("/conversation/{conversation_id}")
 def get_conversation(conversation_id: str):
-    if conversation_id not in conversations:
+    messages = load_messages(conversation_id)
+    if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    history = conversations[conversation_id]["history"]
     messages_out = []
-    for msg in history.messages:
+    for msg in messages:
         role = "human" if isinstance(msg, HumanMessage) else "ai"
         messages_out.append({"role": role, "content": msg.content})
 
     return {
         "conversation_id": conversation_id,
         "history": messages_out,
-        "message_count": len(history.messages) // 2,
+        "message_count": len(messages) // 2,
     }
 
 
 @app.delete("/conversation/{conversation_id}")
 def delete_conversation(conversation_id: str):
-    if conversation_id not in conversations:
+    r = _get_redis()
+    deleted = r.delete(f"conversation:{conversation_id}")
+    if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    del conversations[conversation_id]
     return {"message": "Conversation deleted"}
 
 
 @app.get("/conversations")
 def list_conversations():
+    r = _get_redis()
+    keys = r.keys("conversation:*")
     return {
         "conversations": [
             {
-                "conversation_id": cid,
-                "message_count": len(conv["history"].messages) // 2,
+                "conversation_id": key.split(":", 1)[1],
+                "message_count": len(load_messages(key.split(":", 1)[1])) // 2,
             }
-            for cid, conv in conversations.items()
+            for key in keys
         ]
     }
