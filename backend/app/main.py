@@ -3,19 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 import uuid
-from typing import Optional
+from typing import Optional, TypedDict
 from dotenv import load_dotenv
-from typing import TypedDict
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import init_db, seed_db
+from database import init_db, seed_db, save_messages, load_messages, _get_redis
 from tools import PRODUCT_TOOLS
 
 load_dotenv()
@@ -29,6 +28,7 @@ app = FastAPI(title="LangChain Conversation API")
 
 class ConversationData(TypedDict):
     history: InMemoryChatMessageHistory
+    is_new: bool
 
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
 
@@ -82,9 +82,6 @@ _agent_executor = AgentExecutor(
     max_iterations=5,
 )
 
-conversations = {}
-
-
 class ChatRequest(BaseModel):
     conversation_id: str
     message: str
@@ -97,11 +94,13 @@ class ChatResponse(BaseModel):
 
 
 def get_or_create_conversation(conversation_id: str) -> ConversationData:
-    if conversation_id not in conversations:
-        conversations[conversation_id] = {
-            "history": InMemoryChatMessageHistory(),
-        }
-    return conversations[conversation_id]
+    messages = load_messages(conversation_id)
+    history = InMemoryChatMessageHistory()
+    history.add_messages(messages)
+    return {
+        "history": history,
+        "is_new": len(messages) == 0,
+    }
 
 
 @app.get("/")
@@ -124,6 +123,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Update history after successful invocation only
         history.add_user_message(request.message)
         history.add_ai_message(response_text)
+        save_messages(request.conversation_id, history.messages)
 
         return ChatResponse(
             conversation_id=request.conversation_id,
@@ -147,38 +147,41 @@ def start_conversation() -> dict[str, str]:
 
 @app.get("/conversation/{conversation_id}")
 def get_conversation(conversation_id: str):
-    if conversation_id not in conversations:
+    messages = load_messages(conversation_id)
+    if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    history = conversations[conversation_id]["history"]
     messages_out = []
-    for msg in history.messages:
+    for msg in messages:
         role = "human" if isinstance(msg, HumanMessage) else "ai"
         messages_out.append({"role": role, "content": msg.content})
 
     return {
         "conversation_id": conversation_id,
         "history": messages_out,
-        "message_count": len(history.messages) // 2,
+        "message_count": len(messages) // 2,
     }
 
 
 @app.delete("/conversation/{conversation_id}")
 def delete_conversation(conversation_id: str):
-    if conversation_id not in conversations:
+    r = _get_redis()
+    deleted = r.delete(f"conversation:{conversation_id}")
+    if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    del conversations[conversation_id]
     return {"message": "Conversation deleted"}
 
 
 @app.get("/conversations")
 def list_conversations():
+    r = _get_redis()
+    keys = r.keys("conversation:*")
     return {
         "conversations": [
             {
-                "conversation_id": cid,
-                "message_count": len(conv["history"].messages) // 2,
+                "conversation_id": key.split(":", 1)[1],
+                "message_count": len(load_messages(key.split(":", 1)[1])) // 2,
             }
-            for cid, conv in conversations.items()
+            for key in keys
         ]
     }
