@@ -1,27 +1,38 @@
-from langchain.tools import Tool
+from langchain.tools import StructuredTool
+from pydantic import BaseModel, Field
 from database import query_products, get_categories
+from typing import Optional
 import json
 
 
-def query_products_impl(filters_str: str) -> str:
-    """
-    Query products from the catalog using optional filters.
+class QueryProductsInput(BaseModel):
+    search: Optional[str] = Field(None, description="Keyword to search in product names")
+    category: Optional[str] = Field(None, description="Category name, e.g. 'Electronics'")
+    price_min: Optional[float] = Field(None, description="Minimum price")
+    price_max: Optional[float] = Field(None, description="Maximum price")
+    rating_min: Optional[float] = Field(None, description="Minimum rating out of 5")
 
-    Input: JSON string with any combination of:
-    - search: product name keyword (e.g., "headphones")
-    - category: category name (e.g., "Electronics")
-    - price_min: minimum price (e.g., 10)
-    - price_max: maximum price (e.g., 100)
-    - rating_min: minimum rating out of 5 (e.g., 4.0)
 
-    Examples:
-    - {"search": "headphones"}
-    - {"category": "Electronics", "price_max": 100}
-    - {"category": "Books", "rating_min": 4.5}
-    - {} to get all products
-    """
+def query_products_impl(
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    price_min: Optional[float] = None,
+    price_max: Optional[float] = None,
+    rating_min: Optional[float] = None,
+) -> str:
+    filters = {}
+    if search is not None:
+        filters["search"] = search
+    if category is not None:
+        filters["category"] = category
+    if price_min is not None:
+        filters["price_min"] = price_min
+    if price_max is not None:
+        filters["price_max"] = price_max
+    if rating_min is not None:
+        filters["rating_min"] = rating_min
+
     try:
-        filters = json.loads(filters_str) if filters_str.strip() else {}
         results = query_products(filters)
 
         if not results:
@@ -29,7 +40,6 @@ def query_products_impl(filters_str: str) -> str:
 
         formatted_results = []
         for p in results:
-            # we format the price and rating nicely for display purposes, and include the number of reviews to help customers make informed decisions
             formatted_results.append({
                 "id": p["id"],
                 "name": p["name"],
@@ -40,18 +50,12 @@ def query_products_impl(filters_str: str) -> str:
                 "category": p["category_name"],
             })
 
-        return json.dumps({
-            "results": formatted_results,
-            "count": len(formatted_results),
-        })
-    except json.JSONDecodeError:
-        return json.dumps({"error": "Invalid JSON input", "results": []})
+        return json.dumps({"results": formatted_results, "count": len(formatted_results)})
     except Exception as e:
         return json.dumps({"error": str(e), "results": []})
 
 
-def list_categories_impl(_: str = "") -> str:
-    """Get all available product categories."""
+def list_categories_impl() -> str:
     try:
         categories = get_categories()
         return json.dumps({
@@ -62,19 +66,15 @@ def list_categories_impl(_: str = "") -> str:
 
 
 PRODUCT_TOOLS = [
-    Tool(
+    StructuredTool(
         name="query_products",
         func=query_products_impl,
-        description=(
-            "Search and filter products from the catalog. "
-            "Input: JSON with optional filters: search (keyword), category (name), "
-            "price_min, price_max, rating_min. "
-            'Examples: {"search": "headphones"} or {"category": "Electronics", "price_max": 100} or {} for all products.'
-        ),
+        args_schema=QueryProductsInput,
+        description="Search and filter products from the catalog by keyword, category, price range, or minimum rating.",
     ),
-    Tool(
-        name="list_categories",
+    StructuredTool.from_function(
         func=list_categories_impl,
-        description="List all available product categories. Pass an empty string as input.",
+        name="list_categories",
+        description="List all available product categories.",
     ),
 ]
