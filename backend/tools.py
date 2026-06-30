@@ -44,7 +44,7 @@ def query_products_impl(
                 "id": p["id"],
                 "name": p["name"],
                 "price": f"${p['price']:.2f}",
-                "original_price": f"${p['originalPrice']:.2f}" if p["originalPrice"] else None,
+                "original_price": f"${p['originalprice']:.2f}" if p["originalprice"] else None,
                 "rating": f"{p['rating']:.1f}/5",
                 "reviews": p["reviews"],
                 "category": p["category_name"],

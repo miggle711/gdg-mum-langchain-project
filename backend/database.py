@@ -1,28 +1,24 @@
-import sqlite3
 import os
 import json
 import redis
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 
-# Database file path (can be set via environment variable)
-DB_PATH = os.getenv("DB_PATH", "products.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://gdg:gdg@localhost:5432/ecommerce")
+
 
 def get_db_connection():
-    """Get a connection to the SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row # Enable dict-like access to rows
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
+
 
 def init_db():
     """Initialize the database schema."""
     conn = get_db_connection()
+    cursor = conn.cursor()
 
-    # the cursor is used to execute SQL commands
-    cursor = conn.cursor() 
-
-
-    # Create tables according to the backend/docs/db-models.md specification
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS categories (
             id TEXT PRIMARY KEY,
@@ -32,7 +28,6 @@ def init_db():
         )
     """)
 
-    # Create products table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id TEXT PRIMARY KEY,
@@ -47,23 +42,20 @@ def init_db():
         )
     """)
 
-    # Commit changes and close the connection
     conn.commit()
     conn.close()
+
 
 def seed_db():
     """Seed the database with sample data."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Check if data already exists
     cursor.execute("SELECT COUNT(*) FROM categories")
     if cursor.fetchone()[0] > 0:
-        # Data already exists don't seed again
         conn.close()
         return
 
-    # Insert categories
     categories = [
         ("cat-1", "Electronics", "🖥️", "bg-blue-100"),
         ("cat-2", "Clothing", "👕", "bg-purple-100"),
@@ -71,13 +63,11 @@ def seed_db():
         ("cat-4", "Sports", "⚽", "bg-orange-100"),
         ("cat-5", "Books", "📚", "bg-yellow-100"),
     ]
-    # executemany allows us to insert multiple rows in one command
     cursor.executemany(
-        "INSERT INTO categories (id, name, icon, colorClass) VALUES (?, ?, ?, ?)",
+        "INSERT INTO categories (id, name, icon, colorClass) VALUES (%s, %s, %s, %s)",
         categories
     )
 
-    # Insert products
     products = [
         # Electronics
         ("prod-1", "Wireless Headphones", 49.99, 79.99, 4.5, 128, "https://via.placeholder.com/300?text=Headphones", "cat-1"),
@@ -108,7 +98,7 @@ def seed_db():
         ("prod-18", "Atomic Habits", 18.99, None, 4.8, 456, "https://via.placeholder.com/300?text=Atomic+Habits", "cat-5"),
     ]
     cursor.executemany(
-        "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         products
     )
 
@@ -117,66 +107,8 @@ def seed_db():
 
 
 def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Query products based on filters.
-
-    Supported filters:
-    - category: category name or ID
-    - price_max: maximum price
-    - price_min: minimum price
-    - rating_min: minimum rating
-    - search: search term in product name
-
-    Args:
-
-        filters (Dict[str, Any]): Dictionary of optional filter criteria.
-
-        Example:
-
-            filters = {
-
-                "category": "Electronics",   # category name or ID
-
-                "price_min": 100,
-
-                "price_max": 500,
-
-                "rating_min": 4.5,
-
-                "search": "Laptop"
-
-            }
-
-    Returns:
-
-        List[Dict[str, Any]]: List of matching products with category info.
-
-        Example:
-
-            [
-
-                {
-
-                    "id": "prod-1",
-
-                    "name": "Wireless Headphones",
-
-                    "price": 49.99,
-
-                    "originalPrice": 79.99,
-
-                    "rating": 4.5,
-
-                    "reviews": 128,
-
-                    "category_name": "Electronics"
-
-                }
-
-            ]
-    """
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     query = """
         SELECT
@@ -184,39 +116,31 @@ def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
             c.name as category_name
         FROM products p
         JOIN categories c ON p.category_id = c.id
-        WHERE 1=1 
+        WHERE 1=1
     """
     # where 1=1 is a common SQL trick to simplify appending additional conditions
-    # we can simply add "AND ..." without worrying about whether it's the first condition or not
-    # if there are no filters, it will just return all products no sweat
-    params = [] # we're using parameterized queries to prevent SQL injection and handle user input safely
+    params = []
 
     if "category" in filters:
-        query += " AND (c.name = ? OR c.id = ?)"
-        # we allow filtering by either category name or ID for flexibility
+        query += " AND (c.name = %s OR c.id = %s)"
         params.extend([filters["category"], filters["category"]])
 
     if "price_max" in filters:
-        query += " AND p.price <= ?"
-        # check for all products with price less than or equal to the specified max price
+        query += " AND p.price <= %s"
         params.append(filters["price_max"])
 
     if "price_min" in filters:
-        query += " AND p.price >= ?"
-        # check for all products with price greater than or equal to the specified min price
+        query += " AND p.price >= %s"
         params.append(filters["price_min"])
 
     if "rating_min" in filters:
-        query += " AND p.rating >= ?"
-        # check for all products with rating greater than or equal to the specified min rating
+        query += " AND p.rating >= %s"
         params.append(filters["rating_min"])
 
     if "search" in filters:
-        query += " AND p.name LIKE ?"
-        # we use LIKE for simple substring search in product names
+        query += " AND p.name ILIKE %s"
         params.append(f"%{filters['search']}%")
 
-    # we order results by rating and number of reviews to show the best products first
     query += " ORDER BY p.rating DESC, p.reviews DESC LIMIT 20"
 
     cursor.execute(query, params)
@@ -225,13 +149,11 @@ def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     return results
 
+
 def get_categories() -> List[Dict[str, Any]]:
-    """Get all product categories."""
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT id, name, icon FROM categories ORDER BY name")
-    # fetchall returns a list of rows
-    # convert each row to a dict for easier access in the frontend
     results = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return results
