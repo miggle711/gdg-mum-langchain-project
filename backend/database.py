@@ -2,10 +2,6 @@ import json
 import logging
 import math
 import redis
-import psycopg2
-from psycopg2.pool import ThreadedConnectionPool
-from psycopg2.extras import RealDictCursor
-from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 from elasticsearch import Elasticsearch
@@ -13,7 +9,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = settings.database_url
 ELASTICSEARCH_URL = settings.elasticsearch_url
 ES_INDEX = "products"
 
@@ -45,187 +40,6 @@ def get_es() -> Elasticsearch:
     return _es
 
 
-# Postgres connection pool — min 2 idle connections, max 10 concurrent
-_pg_pool = ThreadedConnectionPool(2, 10, DATABASE_URL)
-
-
-@contextmanager
-def get_db_connection():
-    conn = _pg_pool.getconn()
-    try:
-        yield conn
-    finally:
-        _pg_pool.putconn(conn)
-
-
-def init_db():
-    """Initialize the database schema."""
-    logger.info("Initializing PostgreSQL schema...")
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-
-        # Enable pgvector extension
-        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS categories (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                icon TEXT NOT NULL,
-                colorClass TEXT NOT NULL
-            )
-        """)
-
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS products (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                price REAL NOT NULL,
-                originalPrice REAL,
-                rating REAL NOT NULL,
-                reviews INTEGER NOT NULL,
-                image TEXT NOT NULL,
-                category_id TEXT NOT NULL,
-                embedding vector({EMBEDDING_DIM}),
-                FOREIGN KEY (category_id) REFERENCES categories(id)
-            )
-        """)
-
-        # Note: IVFFlat index needs many more rows than we have in dev.
-        # For production with 10k+ products, add:
-        # CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
-        # For now, pgvector falls back to exact sequential scan which is fine at this scale.
-
-        conn.commit()
-    logger.info("PostgreSQL schema ready.")
-
-
-def seed_db():
-    """Fetch products from DummyJSON and seed the database with embeddings."""
-    import urllib.request
-    from sentence_transformers import SentenceTransformer
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM categories")
-        if cursor.fetchone()[0] > 0:
-            logger.info("Database already seeded, skipping.")
-            return
-
-    logger.info("Seeding database from DummyJSON...")
-    # Fetch all 194 products from DummyJSON
-    req = urllib.request.Request(
-        "https://dummyjson.com/products?limit=194",
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
-    raw_products = data["products"]
-
-    # Build categories from unique category slugs
-    seen_categories = {}
-    category_icons = {
-        "beauty": "💄", "fragrances": "🌸", "furniture": "🛋️",
-        "groceries": "🛒", "home-decoration": "🏠", "kitchen-accessories": "🍳",
-        "laptops": "💻", "mens-shirts": "👔", "mens-shoes": "👟",
-        "mens-watches": "⌚", "mobile-accessories": "📱", "motorcycle": "🏍️",
-        "skin-care": "🧴", "smartphones": "📱", "sports-accessories": "⚽",
-        "sunglasses": "🕶️", "tablets": "📱", "tops": "👕",
-        "vehicle": "🚗", "womens-bags": "👜", "womens-dresses": "👗",
-        "womens-jewellery": "💍", "womens-shoes": "👠", "womens-watches": "⌚",
-    }
-    color_classes = [
-        "bg-blue-100", "bg-purple-100", "bg-green-100", "bg-orange-100",
-        "bg-yellow-100", "bg-pink-100", "bg-red-100", "bg-indigo-100",
-    ]
-    for p in raw_products:
-        slug = p["category"]
-        if slug not in seen_categories:
-            seen_categories[slug] = {
-                "id": f"cat-{slug}",
-                "name": p["category"].replace("-", " ").title(),
-                "icon": category_icons.get(slug, "📦"),
-                "colorClass": color_classes[len(seen_categories) % len(color_classes)],
-            }
-
-    # Generate embeddings using title + description for richer semantic representation
-    logger.info("Generating embeddings for %d products...", len(raw_products))
-    model = SentenceTransformer(EMBEDDING_MODEL)
-    texts = [
-        f"Represent this product for retrieval: {p['title']}. {p['description']}"
-        for p in raw_products
-    ]
-    embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=True).tolist()
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.executemany(
-            "INSERT INTO categories (id, name, icon, colorClass) VALUES (%s, %s, %s, %s)",
-            [(c["id"], c["name"], c["icon"], c["colorClass"]) for c in seen_categories.values()]
-        )
-        for p, embedding in zip(raw_products, embeddings):
-            original_price = round(p["price"] / (1 - p["discountPercentage"] / 100), 2) if p.get("discountPercentage") else None
-            cursor.execute(
-                "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (
-                    f"prod-{p['id']}",
-                    p["title"],
-                    p["price"],
-                    original_price,
-                    p["rating"],
-                    len(p.get("reviews", [])),
-                    p.get("thumbnail", ""),
-                    f"cat-{p['category']}",
-                    embedding,
-                )
-            )
-        conn.commit()
-    logger.info("Database seeding complete.")
-
-
-def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-    logger.info("query_products called with filters: %s", filters)
-    query = """
-        SELECT
-            p.id, p.name, p.price, p.originalPrice, p.rating, p.reviews,
-            c.name as category_name
-        FROM products p
-        JOIN categories c ON p.category_id = c.id
-        WHERE 1=1
-    """
-    # where 1=1 is a common SQL trick to simplify appending additional conditions
-    params = []
-
-    if "category" in filters:
-        query += " AND (c.name = %s OR c.id = %s)"
-        params.extend([filters["category"], filters["category"]])
-
-    if "price_max" in filters:
-        query += " AND p.price <= %s"
-        params.append(filters["price_max"])
-
-    if "price_min" in filters:
-        query += " AND p.price >= %s"
-        params.append(filters["price_min"])
-
-    if "rating_min" in filters:
-        query += " AND p.rating >= %s"
-        params.append(filters["rating_min"])
-
-    if "search" in filters:
-        query += " AND p.name ILIKE %s"
-        params.append(f"%{filters['search']}%")
-
-    query += " ORDER BY p.rating DESC, p.reviews DESC LIMIT 20"
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute(query, params)
-        results = [dict(row) for row in cursor.fetchall()]
-    logger.info("query_products returned %d results", len(results))
-    return results
-
-
 def init_es_index():
     """Create the ES products index with hybrid search mapping if it doesn't exist."""
     es = get_es()
@@ -237,16 +51,16 @@ def init_es_index():
     es.indices.create(index=ES_INDEX, body={
         "mappings": {
             "properties": {
-                "id":            {"type": "keyword"},
-                "name":          {"type": "text", "analyzer": "english"},
-                "description":   {"type": "text", "analyzer": "english"},
-                "category":      {"type": "keyword"},
-                "price":         {"type": "float"},
+                "id":             {"type": "keyword"},
+                "name":           {"type": "text", "analyzer": "english"},
+                "description":    {"type": "text", "analyzer": "english"},
+                "category":       {"type": "keyword"},
+                "price":          {"type": "float"},
                 "original_price": {"type": "float"},
-                "rating":        {"type": "float"},
-                "reviews":       {"type": "integer"},
-                "image":         {"type": "keyword", "index": False},
-                "embedding":     {"type": "dense_vector", "dims": EMBEDDING_DIM, "index": True, "similarity": "cosine"},
+                "rating":         {"type": "float"},
+                "reviews":        {"type": "integer"},
+                "image":          {"type": "keyword", "index": False},
+                "embedding":      {"type": "dense_vector", "dims": EMBEDDING_DIM, "index": True, "similarity": "cosine"},
             }
         }
     })
@@ -266,6 +80,74 @@ def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
     logger.info("Bulk indexing complete.")
 
 
+def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Filter products in Elasticsearch by exact criteria: category, price, rating, keyword."""
+    logger.info("query_products called with filters: %s", filters)
+    es = get_es()
+
+    must_clauses = []
+    filter_clauses = []
+
+    if "search" in filters:
+        must_clauses.append({"multi_match": {
+            "query": filters["search"],
+            "fields": ["name^2", "description"],
+        }})
+
+    if "category" in filters:
+        filter_clauses.append({"term": {"category": filters["category"]}})
+
+    if "price_min" in filters:
+        filter_clauses.append({"range": {"price": {"gte": filters["price_min"]}}})
+
+    if "price_max" in filters:
+        filter_clauses.append({"range": {"price": {"lte": filters["price_max"]}}})
+
+    if "rating_min" in filters:
+        filter_clauses.append({"range": {"rating": {"gte": filters["rating_min"]}}})
+
+    query = {"bool": {}}
+    if must_clauses:
+        query["bool"]["must"] = must_clauses
+    if filter_clauses:
+        query["bool"]["filter"] = filter_clauses
+    if not must_clauses and not filter_clauses:
+        query = {"match_all": {}}
+
+    response = es.search(index=ES_INDEX, body={
+        "size": 20,
+        "query": query,
+        "sort": [{"rating": "desc"}, {"reviews": "desc"}],
+    })
+
+    results = []
+    for hit in response["hits"]["hits"]:
+        src = hit["_source"]
+        results.append({
+            "id": src["id"],
+            "name": src["name"],
+            "price": src["price"],
+            "originalprice": src.get("original_price"),
+            "rating": src["rating"],
+            "reviews": src["reviews"],
+            "category_name": src["category"],
+        })
+
+    logger.info("query_products returned %d results", len(results))
+    return results
+
+
+def get_categories() -> List[Dict[str, Any]]:
+    """Get distinct categories from Elasticsearch via aggregation."""
+    es = get_es()
+    response = es.search(index=ES_INDEX, body={
+        "size": 0,
+        "aggs": {"categories": {"terms": {"field": "category", "size": 50}}},
+    })
+    buckets = response["aggregations"]["categories"]["buckets"]
+    return [{"name": b["key"], "icon": "📦"} for b in buckets]
+
+
 def semantic_search(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
     """Hybrid search with cross-encoder re-ranking and Redis semantic cache.
 
@@ -279,9 +161,8 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     cached = get_cached_search(query_embedding)
     if cached is not None:
         return cached[:limit]
-    es = get_es()
 
-    # Fetch more candidates than needed so the reranker has room to work
+    es = get_es()
     candidates_size = max(20, limit * 4)
 
     response = es.search(index=ES_INDEX, body={
@@ -289,13 +170,11 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
         "query": {
             "bool": {
                 "should": [
-                    # BM25 keyword search on name and description
                     {"multi_match": {
                         "query": query_text,
                         "fields": ["name^2", "description"],
                         "boost": 0.5,
                     }},
-                    # Dense vector similarity — weighted higher so semantic intent dominates
                     {"knn": {
                         "field": "embedding",
                         "query_vector": query_embedding,
@@ -326,7 +205,6 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
         logger.info("semantic_search: no candidates from ES")
         return []
 
-    # Re-rank candidates using cross-encoder
     logger.info("Re-ranking %d candidates with cross-encoder...", len(candidates))
     reranker = get_reranker()
     pairs = [(query_text, f"{c['name']}. {c['description']}") for c in candidates]
@@ -338,20 +216,11 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     candidates.sort(key=lambda x: x["similarity"], reverse=True)
     results = candidates[:limit]
 
-    # Clean up internal field before returning
     for r in results:
         del r["description"]
 
     set_cached_search(query_text, query_embedding, results)
     logger.info("semantic_search returned %d results after reranking", len(results))
-    return results
-
-
-def get_categories() -> List[Dict[str, Any]]:
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT id, name, icon FROM categories ORDER BY name")
-        results = [dict(row) for row in cursor.fetchall()]
     return results
 
 
@@ -383,7 +252,6 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
 def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
     """Check Redis for a semantically similar cached search result."""
     r = _get_redis()
-    # Scan all cached search keys and find one with a similar enough embedding
     for key in r.scan_iter("search_cache:*"):
         entry = r.get(key)
         if entry is None:
