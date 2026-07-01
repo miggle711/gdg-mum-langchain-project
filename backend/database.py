@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import math
 import redis
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -262,13 +263,18 @@ def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
 
 
 def semantic_search(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
-    """Hybrid search with cross-encoder re-ranking.
+    """Hybrid search with cross-encoder re-ranking and Redis semantic cache.
 
-    1. ES retrieves top 20 candidates via BM25 + dense vector (recall)
-    2. Cross-encoder re-scores each candidate against the query (precision)
-    3. Returns top `limit` after re-ranking
+    1. Check Redis for a cached result with a semantically similar embedding
+    2. On miss: ES retrieves top 20 candidates via BM25 + dense vector (recall)
+    3. Cross-encoder re-scores each candidate against the query (precision)
+    4. Cache and return top `limit` after re-ranking
     """
     logger.info("semantic_search called: query='%s', limit=%d", query_text, limit)
+
+    cached = get_cached_search(query_embedding)
+    if cached is not None:
+        return cached[:limit]
     es = get_es()
 
     # Fetch more candidates than needed so the reranker has room to work
@@ -332,6 +338,7 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     for r in results:
         del r["description"]
 
+    set_cached_search(query_text, query_embedding, results)
     logger.info("semantic_search returned %d results after reranking", len(results))
     return results
 
@@ -353,10 +360,45 @@ _redis_pool = redis.ConnectionPool.from_url(
 )
 
 CONVERSATION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+SEARCH_CACHE_TTL_SECONDS = 60 * 60 * 6   # 6 hours
+SEARCH_CACHE_SIMILARITY_THRESHOLD = 0.92  # cosine similarity threshold for cache hit
 
 
 def _get_redis() -> redis.Redis:
     return redis.Redis(connection_pool=_redis_pool)
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
+    """Check Redis for a semantically similar cached search result."""
+    r = _get_redis()
+    # Scan all cached search keys and find one with a similar enough embedding
+    for key in r.scan_iter("search_cache:*"):
+        entry = r.get(key)
+        if entry is None:
+            continue
+        data = json.loads(entry)
+        similarity = _cosine_similarity(query_embedding, data["embedding"])
+        if similarity >= SEARCH_CACHE_SIMILARITY_THRESHOLD:
+            logger.info("Search cache HIT (similarity=%.3f, key=%s)", similarity, key)
+            return data["results"]
+    return None
+
+
+def set_cached_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
+    """Store search results in Redis keyed by a hash of the query text."""
+    r = _get_redis()
+    key = f"search_cache:{abs(hash(query_text))}"
+    r.set(key, json.dumps({"embedding": query_embedding, "results": results}), ex=SEARCH_CACHE_TTL_SECONDS)
+    logger.info("Search result cached under key=%s (TTL=%ds)", key, SEARCH_CACHE_TTL_SECONDS)
 
 
 def save_messages(conversation_id: str, messages: List[BaseMessage]) -> None:
