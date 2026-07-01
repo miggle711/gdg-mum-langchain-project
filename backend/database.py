@@ -8,6 +8,9 @@ from langchain_core.messages import BaseMessage, messages_from_dict, messages_to
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://gdg:gdg@localhost:5432/ecommerce")
 
+EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+EMBEDDING_DIM = 768
+
 
 def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL)
@@ -19,6 +22,9 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # Enable pgvector extension
+    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS categories (
             id TEXT PRIMARY KEY,
@@ -28,7 +34,7 @@ def init_db():
         )
     """)
 
-    cursor.execute("""
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS products (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -38,16 +44,25 @@ def init_db():
             reviews INTEGER NOT NULL,
             image TEXT NOT NULL,
             category_id TEXT NOT NULL,
+            embedding vector({EMBEDDING_DIM}),
             FOREIGN KEY (category_id) REFERENCES categories(id)
         )
     """)
+
+    # Note: IVFFlat index needs many more rows than we have in dev.
+    # For production with 10k+ products, add:
+    # CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+    # For now, pgvector falls back to exact sequential scan which is fine at this scale.
 
     conn.commit()
     conn.close()
 
 
 def seed_db():
-    """Seed the database with sample data."""
+    """Fetch products from DummyJSON and seed the database with embeddings."""
+    import urllib.request
+    from sentence_transformers import SentenceTransformer
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -56,54 +71,75 @@ def seed_db():
         conn.close()
         return
 
-    categories = [
-        ("cat-1", "Electronics", "🖥️", "bg-blue-100"),
-        ("cat-2", "Clothing", "👕", "bg-purple-100"),
-        ("cat-3", "Home & Garden", "🏠", "bg-green-100"),
-        ("cat-4", "Sports", "⚽", "bg-orange-100"),
-        ("cat-5", "Books", "📚", "bg-yellow-100"),
+    # Fetch all 194 products from DummyJSON
+    req = urllib.request.Request(
+        "https://dummyjson.com/products?limit=194",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read())
+    raw_products = data["products"]
+
+    # Build categories from unique category slugs
+    seen_categories = {}
+    category_icons = {
+        "beauty": "💄", "fragrances": "🌸", "furniture": "🛋️",
+        "groceries": "🛒", "home-decoration": "🏠", "kitchen-accessories": "🍳",
+        "laptops": "💻", "mens-shirts": "👔", "mens-shoes": "👟",
+        "mens-watches": "⌚", "mobile-accessories": "📱", "motorcycle": "🏍️",
+        "skin-care": "🧴", "smartphones": "📱", "sports-accessories": "⚽",
+        "sunglasses": "🕶️", "tablets": "📱", "tops": "👕",
+        "vehicle": "🚗", "womens-bags": "👜", "womens-dresses": "👗",
+        "womens-jewellery": "💍", "womens-shoes": "👠", "womens-watches": "⌚",
+    }
+    color_classes = [
+        "bg-blue-100", "bg-purple-100", "bg-green-100", "bg-orange-100",
+        "bg-yellow-100", "bg-pink-100", "bg-red-100", "bg-indigo-100",
     ]
+    for p in raw_products:
+        slug = p["category"]
+        if slug not in seen_categories:
+            seen_categories[slug] = {
+                "id": f"cat-{slug}",
+                "name": p["category"].replace("-", " ").title(),
+                "icon": category_icons.get(slug, "📦"),
+                "colorClass": color_classes[len(seen_categories) % len(color_classes)],
+            }
+
     cursor.executemany(
         "INSERT INTO categories (id, name, icon, colorClass) VALUES (%s, %s, %s, %s)",
-        categories
+        [(c["id"], c["name"], c["icon"], c["colorClass"]) for c in seen_categories.values()]
     )
 
-    products = [
-        # Electronics
-        ("prod-1", "Wireless Headphones", 49.99, 79.99, 4.5, 128, "https://via.placeholder.com/300?text=Headphones", "cat-1"),
-        ("prod-2", "USB-C Hub", 29.99, None, 4.2, 45, "https://via.placeholder.com/300?text=USB+Hub", "cat-1"),
-        ("prod-3", "Portable Speaker", 89.99, 119.99, 4.7, 203, "https://via.placeholder.com/300?text=Speaker", "cat-1"),
-        ("prod-4", "Phone Stand", 15.99, None, 4.1, 78, "https://via.placeholder.com/300?text=Phone+Stand", "cat-1"),
-        ("prod-5", "Mechanical Keyboard", 79.99, 129.99, 4.6, 312, "https://via.placeholder.com/300?text=Keyboard", "cat-1"),
-
-        # Clothing
-        ("prod-6", "Cotton T-Shirt", 19.99, None, 4.3, 89, "https://via.placeholder.com/300?text=T-Shirt", "cat-2"),
-        ("prod-7", "Denim Jeans", 59.99, 89.99, 4.4, 156, "https://via.placeholder.com/300?text=Jeans", "cat-2"),
-        ("prod-8", "Running Shoes", 89.99, 129.99, 4.5, 234, "https://via.placeholder.com/300?text=Shoes", "cat-2"),
-        ("prod-9", "Winter Jacket", 129.99, 179.99, 4.6, 178, "https://via.placeholder.com/300?text=Jacket", "cat-2"),
-
-        # Home & Garden
-        ("prod-10", "Plant Pot (Small)", 12.99, None, 4.2, 45, "https://via.placeholder.com/300?text=Pot", "cat-3"),
-        ("prod-11", "Desk Lamp", 34.99, 49.99, 4.4, 92, "https://via.placeholder.com/300?text=Lamp", "cat-3"),
-        ("prod-12", "Throw Pillow", 24.99, None, 4.1, 67, "https://via.placeholder.com/300?text=Pillow", "cat-3"),
-
-        # Sports
-        ("prod-13", "Yoga Mat", 22.99, None, 4.3, 145, "https://via.placeholder.com/300?text=Yoga+Mat", "cat-4"),
-        ("prod-14", "Dumbbells (Set)", 49.99, 79.99, 4.5, 201, "https://via.placeholder.com/300?text=Dumbbells", "cat-4"),
-        ("prod-15", "Resistance Bands", 16.99, None, 4.2, 123, "https://via.placeholder.com/300?text=Bands", "cat-4"),
-
-        # Books
-        ("prod-16", "Python Programming", 39.99, None, 4.6, 89, "https://via.placeholder.com/300?text=Python+Book", "cat-5"),
-        ("prod-17", "The Great Gatsby", 12.99, None, 4.7, 234, "https://via.placeholder.com/300?text=Gatsby", "cat-5"),
-        ("prod-18", "Atomic Habits", 18.99, None, 4.8, 456, "https://via.placeholder.com/300?text=Atomic+Habits", "cat-5"),
+    # Generate embeddings using title + description for richer semantic representation
+    print(f"Generating embeddings for {len(raw_products)} products...")
+    model = SentenceTransformer(EMBEDDING_MODEL)
+    texts = [
+        f"Represent this product for retrieval: {p['title']}. {p['description']}"
+        for p in raw_products
     ]
-    cursor.executemany(
-        "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-        products
-    )
+    embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=True).tolist()
+
+    for p, embedding in zip(raw_products, embeddings):
+        original_price = round(p["price"] / (1 - p["discountPercentage"] / 100), 2) if p.get("discountPercentage") else None
+        cursor.execute(
+            "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                f"prod-{p['id']}",
+                p["title"],
+                p["price"],
+                original_price,
+                p["rating"],
+                len(p.get("reviews", [])),
+                p.get("thumbnail", ""),
+                f"cat-{p['category']}",
+                embedding,
+            )
+        )
 
     conn.commit()
     conn.close()
+    print("Seeding complete.")
 
 
 def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -147,6 +183,28 @@ def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     results = [dict(row) for row in cursor.fetchall()]
     conn.close()
 
+    return results
+
+
+def semantic_search(query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+    """Find products most similar to the query embedding using cosine distance."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute("""
+        SELECT
+            p.id, p.name, p.price, p.originalprice, p.rating, p.reviews,
+            c.name as category_name,
+            1 - (p.embedding <=> %s::vector) as similarity
+        FROM products p
+        JOIN categories c ON p.category_id = c.id
+        WHERE p.embedding IS NOT NULL
+        ORDER BY p.embedding <=> %s::vector
+        LIMIT %s
+    """, (query_embedding, query_embedding, limit))
+
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
     return results
 
 
