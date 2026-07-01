@@ -9,7 +9,7 @@ import { map } from 'rxjs/operators';
   providedIn: 'root', // This makes the service available application-wide without needing to add it to a module's providers array
 })
 export class Chat {
-  private apiUrl = '/api';  // Base URL for the backend API
+  private apiUrl = 'http://localhost:8000';  // Base URL for the backend API
   private conversationId: string = ''; // Store the current conversation ID
 
   constructor(private http: HttpClient) {} 

@@ -1,3 +1,5 @@
 lca-lc-foundations/.env
 .env
 backend/.env
+.venv/
+__pycache__/
