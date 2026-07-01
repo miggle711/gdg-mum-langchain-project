@@ -35,29 +35,79 @@ export class Chat {
   }
 
   send(userPrompt: string, systemPrompt?: string): Observable<ChatResponse> {
-    /**
-     * This method sends a user message to the backend's /chat endpoint and returns the assistant's reply.
-     * 
-     * args:
-     *   userPrompt: the message from the user to send to the backend
-     *   systemPrompt: an optional system prompt that can provide additional context for the conversation (not currently used in this implementation but can be added to the request payload if needed)
-     * returns: an Observable that emits the assistant's reply from the backend
-     */
     if (!this.conversationId) {
       throw new Error('Conversation not started. Call startConversation() first.');
     }
-    console.log('Chat service sending request to:', `${this.apiUrl}/chat`);
     return this.http
       .post<any>(`${this.apiUrl}/chat`, {
         conversation_id: this.conversationId,
         message: userPrompt,
       })
-      .pipe( // pipe allows us to transform the response from the backend before it gets to the component that called this method
-        map((response) => {
-          console.log('Chat service received response:', response);
-          return { reply: response.response }; // we return an object with a 'reply' property that contains the assistant's response from the backend, which matches the ChatResponse interface expected by the component
-        })
+      .pipe(
+        map((response) => ({ reply: response.response }))
       );
+  }
+
+  // Streams the assistant reply token by token via Server-Sent Events.
+  // Calls onToken for each text chunk and onDone when the stream ends.
+  async sendStream(
+    userPrompt: string,
+    onToken: (token: string) => void,
+    onDone: (fullText: string) => void,
+    onError: (err: string) => void,
+  ): Promise<void> {
+    if (!this.conversationId) {
+      throw new Error('Conversation not started. Call startConversation() first.');
+    }
+
+    const response = await fetch(`${this.apiUrl}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversation_id: this.conversationId, message: userPrompt }),
+    });
+
+    if (!response.ok || !response.body) {
+      onError(`Request failed: ${response.status}`);
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') {
+          onDone(fullText);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(payload);
+          if (parsed.error) {
+            onError(parsed.error);
+            return;
+          }
+          if (parsed.text) {
+            fullText += parsed.text;
+            onToken(parsed.text);
+          }
+        } catch {
+          // malformed chunk — skip
+        }
+      }
+    }
+
+    onDone(fullText);
   }
 
   // Getter and setter for the conversation ID, which can be useful if we want to manage the conversation ID separately or need to reset it when starting a new conversation
