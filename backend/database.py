@@ -1,7 +1,10 @@
 import json
 import logging
-import math
+import struct
 import redis
+from redis.commands.search.field import VectorField, TextField, NumericField
+from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+from redis.commands.search.query import Query
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 from elasticsearch import Elasticsearch
@@ -224,51 +227,107 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     return results
 
 
-# Redis connection pool — created once, reused across all requests
+CONVERSATION_TTL_SECONDS = settings.conversation_ttl_seconds
+SEARCH_CACHE_TTL_SECONDS = settings.search_cache_ttl_seconds
+SEARCH_CACHE_SIMILARITY_THRESHOLD = settings.search_cache_similarity_threshold
+
+CACHE_INDEX = "idx:search_cache"
+CACHE_PREFIX = "search_cache:"
+
+# String pool — for conversation history (JSON strings)
 _redis_pool = redis.ConnectionPool.from_url(
     settings.redis_url,
     decode_responses=True,
     max_connections=20,
 )
 
-CONVERSATION_TTL_SECONDS = settings.conversation_ttl_seconds
-SEARCH_CACHE_TTL_SECONDS = settings.search_cache_ttl_seconds
-SEARCH_CACHE_SIMILARITY_THRESHOLD = settings.search_cache_similarity_threshold
+# Binary pool — for vector cache (embeddings are raw bytes, can't be decoded as strings)
+_redis_binary_pool = redis.ConnectionPool.from_url(
+    settings.redis_url,
+    decode_responses=False,
+    max_connections=10,
+)
 
 
 def _get_redis() -> redis.Redis:
     return redis.Redis(connection_pool=_redis_pool)
 
 
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+def _get_redis_binary() -> redis.Redis:
+    return redis.Redis(connection_pool=_redis_binary_pool)
+
+
+def _embedding_to_bytes(embedding: List[float]) -> bytes:
+    return struct.pack(f"{len(embedding)}f", *embedding)
+
+
+def _bytes_to_embedding(b: bytes) -> List[float]:
+    n = len(b) // 4
+    return list(struct.unpack(f"{n}f", b))
+
+
+def init_cache_index() -> None:
+    """Create the Redis Stack vector index for semantic cache if it doesn't exist."""
+    r = _get_redis_binary()
+    try:
+        r.ft(CACHE_INDEX).info()
+        logger.info("Redis cache vector index '%s' already exists.", CACHE_INDEX)
+        return
+    except Exception:
+        pass
+
+    logger.info("Creating Redis cache vector index '%s'...", CACHE_INDEX)
+    r.ft(CACHE_INDEX).create_index(
+        fields=[
+            VectorField(
+                "embedding",
+                "HNSW",
+                {"TYPE": "FLOAT32", "DIM": EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE", "M": 16, "EF_CONSTRUCTION": 200},
+            ),
+            TextField("results"),
+        ],
+        definition=IndexDefinition(prefix=[CACHE_PREFIX], index_type=IndexType.HASH),
+    )
+    logger.info("Redis cache vector index created.")
 
 
 def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
-    """Check Redis for a semantically similar cached search result."""
-    r = _get_redis()
-    for key in r.scan_iter("search_cache:*"):
-        entry = r.get(key)
-        if entry is None:
-            continue
-        data = json.loads(entry)
-        similarity = _cosine_similarity(query_embedding, data["embedding"])
-        if similarity >= SEARCH_CACHE_SIMILARITY_THRESHOLD:
-            logger.info("Search cache HIT (similarity=%.3f, key=%s)", similarity, key)
-            return data["results"]
-    return None
+    """Find a semantically similar cached result using Redis Stack KNN vector search."""
+    r = _get_redis_binary()
+    query_bytes = _embedding_to_bytes(query_embedding)
+    threshold = 1.0 - SEARCH_CACHE_SIMILARITY_THRESHOLD  # cosine distance = 1 - similarity
+
+    q = (
+        Query(f"*=>[KNN 1 @embedding $vec AS score]")
+        .sort_by("score")
+        .return_fields("score", "results")
+        .dialect(2)
+    )
+    results = r.ft(CACHE_INDEX).search(q, query_params={"vec": query_bytes})
+
+    if not results.docs:
+        return None
+
+    doc = results.docs[0]
+    distance = float(doc.score)
+    if distance > threshold:
+        return None
+
+    logger.info("Search cache HIT (cosine distance=%.3f, key=%s)", distance, doc.id)
+    return json.loads(doc.results)
 
 
 def set_cached_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
-    """Store search results in Redis keyed by a hash of the query text."""
-    r = _get_redis()
-    key = f"search_cache:{abs(hash(query_text))}"
-    r.set(key, json.dumps({"embedding": query_embedding, "results": results}), ex=SEARCH_CACHE_TTL_SECONDS)
+    """Store search results as a Redis hash with a binary embedding field."""
+    r = _get_redis_binary()
+    key = f"{CACHE_PREFIX}{abs(hash(query_text))}"
+    pipe = r.pipeline()
+    pipe.hset(key, mapping={
+        "embedding": _embedding_to_bytes(query_embedding),
+        "results": json.dumps(results),
+    })
+    pipe.expire(key, SEARCH_CACHE_TTL_SECONDS)
+    pipe.execute()
     logger.info("Search result cached under key=%s (TTL=%ds)", key, SEARCH_CACHE_TTL_SECONDS)
 
 
