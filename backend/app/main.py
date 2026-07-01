@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +63,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 app.include_router(chat_router)
 app.include_router(health_router)
+
+Instrumentator().instrument(app).expose(app)
 
 
 @app.get("/")

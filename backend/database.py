@@ -1,6 +1,7 @@
 import json
 import logging
 import struct
+import time
 import redis
 from redis.commands.search.field import VectorField, TextField, NumericField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
@@ -9,6 +10,7 @@ from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, messages_from_dict, messages_to_dict
 from elasticsearch import Elasticsearch
 from app.config import settings
+from app.metrics import search_cache_hits, search_cache_misses, rerank_latency, es_search_latency
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +165,15 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
 
     cached = get_cached_search(query_embedding)
     if cached is not None:
+        search_cache_hits.inc()
         return cached[:limit]
+
+    search_cache_misses.inc()
 
     es = get_es()
     candidates_size = max(20, limit * 4)
 
+    t0 = time.perf_counter()
     response = es.search(index=ES_INDEX, body={
         "size": candidates_size,
         "query": {
@@ -188,6 +194,7 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
             }
         }
     })
+    es_search_latency.observe(time.perf_counter() - t0)
 
     candidates = []
     for hit in response["hits"]["hits"]:
@@ -211,7 +218,9 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     logger.info("Re-ranking %d candidates with cross-encoder...", len(candidates))
     reranker = get_reranker()
     pairs = [(query_text, f"{c['name']}. {c['description']}") for c in candidates]
+    t1 = time.perf_counter()
     scores = reranker.predict(pairs).tolist()
+    rerank_latency.observe(time.perf_counter() - t1)
 
     for candidate, score in zip(candidates, scores):
         candidate["similarity"] = round(score, 3)

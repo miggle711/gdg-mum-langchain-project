@@ -11,3 +11,5 @@ slowapi==0.1.9
 sentence-transformers==3.4.1
 elasticsearch==8.13.0
 datasets==2.19.0
+prometheus-fastapi-instrumentator==6.1.0
+prometheus-client==0.20.0
