@@ -281,8 +281,8 @@ def init_cache_index() -> None:
         fields=[
             VectorField(
                 "embedding",
-                "FLAT",
-                {"TYPE": "FLOAT32", "DIM": EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE"},
+                "HNSW",
+                {"TYPE": "FLOAT32", "DIM": EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE", "M": 16, "EF_CONSTRUCTION": 200},
             ),
             TextField("results"),
         ],
