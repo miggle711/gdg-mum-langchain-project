@@ -3,7 +3,9 @@ import logging
 import math
 import redis
 import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 from elasticsearch import Elasticsearch
@@ -43,51 +45,58 @@ def get_es() -> Elasticsearch:
     return _es
 
 
+# Postgres connection pool — min 2 idle connections, max 10 concurrent
+_pg_pool = ThreadedConnectionPool(2, 10, DATABASE_URL)
+
+
+@contextmanager
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
+    conn = _pg_pool.getconn()
+    try:
+        yield conn
+    finally:
+        _pg_pool.putconn(conn)
 
 
 def init_db():
     """Initialize the database schema."""
     logger.info("Initializing PostgreSQL schema...")
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    # Enable pgvector extension
-    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        # Enable pgvector extension
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS categories (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            icon TEXT NOT NULL,
-            colorClass TEXT NOT NULL
-        )
-    """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                icon TEXT NOT NULL,
+                colorClass TEXT NOT NULL
+            )
+        """)
 
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS products (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            price REAL NOT NULL,
-            originalPrice REAL,
-            rating REAL NOT NULL,
-            reviews INTEGER NOT NULL,
-            image TEXT NOT NULL,
-            category_id TEXT NOT NULL,
-            embedding vector({EMBEDDING_DIM}),
-            FOREIGN KEY (category_id) REFERENCES categories(id)
-        )
-    """)
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS products (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                price REAL NOT NULL,
+                originalPrice REAL,
+                rating REAL NOT NULL,
+                reviews INTEGER NOT NULL,
+                image TEXT NOT NULL,
+                category_id TEXT NOT NULL,
+                embedding vector({EMBEDDING_DIM}),
+                FOREIGN KEY (category_id) REFERENCES categories(id)
+            )
+        """)
 
-    # Note: IVFFlat index needs many more rows than we have in dev.
-    # For production with 10k+ products, add:
-    # CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
-    # For now, pgvector falls back to exact sequential scan which is fine at this scale.
+        # Note: IVFFlat index needs many more rows than we have in dev.
+        # For production with 10k+ products, add:
+        # CREATE INDEX ON products USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+        # For now, pgvector falls back to exact sequential scan which is fine at this scale.
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     logger.info("PostgreSQL schema ready.")
 
 
@@ -96,14 +105,12 @@ def seed_db():
     import urllib.request
     from sentence_transformers import SentenceTransformer
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT COUNT(*) FROM categories")
-    if cursor.fetchone()[0] > 0:
-        logger.info("Database already seeded, skipping.")
-        conn.close()
-        return
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM categories")
+        if cursor.fetchone()[0] > 0:
+            logger.info("Database already seeded, skipping.")
+            return
 
     logger.info("Seeding database from DummyJSON...")
     # Fetch all 194 products from DummyJSON
@@ -141,11 +148,6 @@ def seed_db():
                 "colorClass": color_classes[len(seen_categories) % len(color_classes)],
             }
 
-    cursor.executemany(
-        "INSERT INTO categories (id, name, icon, colorClass) VALUES (%s, %s, %s, %s)",
-        [(c["id"], c["name"], c["icon"], c["colorClass"]) for c in seen_categories.values()]
-    )
-
     # Generate embeddings using title + description for richer semantic representation
     logger.info("Generating embeddings for %d products...", len(raw_products))
     model = SentenceTransformer(EMBEDDING_MODEL)
@@ -155,33 +157,34 @@ def seed_db():
     ]
     embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=True).tolist()
 
-    for p, embedding in zip(raw_products, embeddings):
-        original_price = round(p["price"] / (1 - p["discountPercentage"] / 100), 2) if p.get("discountPercentage") else None
-        cursor.execute(
-            "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                f"prod-{p['id']}",
-                p["title"],
-                p["price"],
-                original_price,
-                p["rating"],
-                len(p.get("reviews", [])),
-                p.get("thumbnail", ""),
-                f"cat-{p['category']}",
-                embedding,
-            )
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.executemany(
+            "INSERT INTO categories (id, name, icon, colorClass) VALUES (%s, %s, %s, %s)",
+            [(c["id"], c["name"], c["icon"], c["colorClass"]) for c in seen_categories.values()]
         )
-
-    conn.commit()
-    conn.close()
+        for p, embedding in zip(raw_products, embeddings):
+            original_price = round(p["price"] / (1 - p["discountPercentage"] / 100), 2) if p.get("discountPercentage") else None
+            cursor.execute(
+                "INSERT INTO products (id, name, price, originalPrice, rating, reviews, image, category_id, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    f"prod-{p['id']}",
+                    p["title"],
+                    p["price"],
+                    original_price,
+                    p["rating"],
+                    len(p.get("reviews", [])),
+                    p.get("thumbnail", ""),
+                    f"cat-{p['category']}",
+                    embedding,
+                )
+            )
+        conn.commit()
     logger.info("Database seeding complete.")
 
 
 def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     logger.info("query_products called with filters: %s", filters)
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-
     query = """
         SELECT
             p.id, p.name, p.price, p.originalPrice, p.rating, p.reviews,
@@ -215,9 +218,10 @@ def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     query += " ORDER BY p.rating DESC, p.reviews DESC LIMIT 20"
 
-    cursor.execute(query, params)
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(query, params)
+        results = [dict(row) for row in cursor.fetchall()]
     logger.info("query_products returned %d results", len(results))
     return results
 
@@ -344,11 +348,10 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
 
 
 def get_categories() -> List[Dict[str, Any]]:
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT id, name, icon FROM categories ORDER BY name")
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT id, name, icon FROM categories ORDER BY name")
+        results = [dict(row) for row in cursor.fetchall()]
     return results
 
 
