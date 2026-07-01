@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import HumanMessage
 import sys
@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from database import save_messages, load_messages, _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData
 from app.agent import agent_executor
+from app.limiter import limiter
 
 router = APIRouter()
 
@@ -25,23 +26,24 @@ def get_or_create_conversation(conversation_id: str) -> ConversationData:
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest) -> ChatResponse:
+@limiter.limit("20/minute")
+async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     try:
-        conversation = get_or_create_conversation(request.conversation_id)
+        conversation = get_or_create_conversation(body.conversation_id)
         history = conversation["history"]
 
         result = agent_executor.invoke({
-            "input": request.message,
+            "input": body.message,
             "chat_history": history.messages,
         })
         response_text = result["output"]
 
-        history.add_user_message(request.message)
+        history.add_user_message(body.message)
         history.add_ai_message(response_text)
-        save_messages(request.conversation_id, history.messages)
+        save_messages(body.conversation_id, history.messages)
 
         return ChatResponse(
-            conversation_id=request.conversation_id,
+            conversation_id=body.conversation_id,
             response=response_text or "I apologize, but I'm having trouble generating a response at the moment.",
             message_count=len(history.messages) // 2,
         )

@@ -5,6 +5,9 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.config import settings  # noqa: E402 — must come after sys.path insert
+from app.limiter import limiter
 from database import init_es_index
 from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
@@ -24,6 +27,9 @@ init_es_index()
 
 app = FastAPI(title="LangChain Conversation API")
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
