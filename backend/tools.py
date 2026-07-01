@@ -69,7 +69,7 @@ def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
         # BGE models perform better with this instruction prefix for retrieval queries
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
         embedding = _embedding_model.encode(prefixed_query, normalize_embeddings=True).tolist()
-        results = semantic_search(embedding, limit=limit or 5)
+        results = semantic_search(query, embedding, limit=limit or 5)
 
         if not results:
             return json.dumps({"results": [], "message": "No similar products found"})
