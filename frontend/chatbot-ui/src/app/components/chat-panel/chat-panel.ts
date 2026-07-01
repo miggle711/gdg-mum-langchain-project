@@ -7,7 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatDividerModule } from '@angular/material/divider';
 import { TextFieldModule } from '@angular/cdk/text-field';
-import { Chat, ChatResponse } from '../../services/chat';
+import { Chat } from '../../services/chat';
 
 /**
  * ChatPanel is an Angular component that provides a user interface for a chatbot conversation. 
@@ -111,41 +111,36 @@ export class ChatPanel implements AfterViewChecked, OnInit {
   }
 
   sendMessage() {
-    /**
-     * This method is called when the user sends a message (either by pressing Enter or clicking the send button). It first checks if the user message is not empty, then adds the user's message to the messages array and calls the send method of the Chat service to send the message to the backend.
-     * It subscribes to the Observable returned by the send method to handle the asynchronous response from the backend. On success, it adds the assistant's reply to the messages array. On error, it adds an error message to the messages array.
-     */
-    if (!this.userMessage.trim()) return; // if the user message is empty or just whitespace, we do nothing and return early
+    if (!this.userMessage.trim()) return;
     const text = this.userMessage.trim();
-    this.messages.push({ role: 'user', text }); // we add the user's message to the messages array, which will be displayed in the chat panel. The role is set to 'user' so we can style it differently from the assistant's messages in the UI.
+    this.messages.push({ role: 'user', text });
     this.userMessage = '';
     this.isLoading = true;
     this.shouldScroll = true;
+    this.cdr.markForCheck();
 
-    console.log('Sending message:', text);
-    console.log('Current messages:', this.messages);
+    // Push a placeholder for the assistant reply that we'll fill in token by token
+    this.messages.push({ role: 'assistant', text: '' });
+    const assistantIndex = this.messages.length - 1;
 
-    this.chat.send(text).subscribe({ // we call the send method of the Chat service, which sends the user's message to the backend and returns an Observable that we subscribe to in order to handle the response from the backend
-      next: (response: ChatResponse) => {
-        console.log('Received response:', response);
-        console.log('Response reply:', response.reply);
-        // On success, we add the assistant's reply to the messages array, which will be displayed in the chat panel. The role is set to 'assistant' so we can style it differently from the user's messages in the UI.
-        this.messages.push({ role: 'assistant', text: response.reply });
-        console.log('Messages after push:', this.messages);
+    this.chat.sendStream(
+      text,
+      (token) => {
+        this.messages[assistantIndex].text += token;
+        this.shouldScroll = true;
+        this.cdr.markForCheck();
+      },
+      (_fullText) => {
         this.isLoading = false;
         this.shouldScroll = true;
         this.cdr.markForCheck();
       },
-      error: (error) => {
-        console.log('Error received:', error);
-        this.messages.push({
-          role: 'assistant',
-          text: `Error: ${error.error?.detail || 'Failed to get response from server. Make sure the backend is running.'}`,
-        });
+      (err) => {
+        this.messages[assistantIndex].text = `Error: ${err}`;
         this.isLoading = false;
         this.shouldScroll = true;
         this.cdr.markForCheck();
       },
-    });
+    );
   }
 }

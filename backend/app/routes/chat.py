@@ -1,5 +1,8 @@
 import uuid
+import json
+import asyncio
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import HumanMessage, SystemMessage
 import sys
@@ -57,6 +60,45 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     except Exception as e:
         print(f"Exception in chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/stream")
+@limiter.limit("20/minute")
+async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
+    conversation = get_or_create_conversation(body.conversation_id)
+    history = conversation["history"]
+
+    summary, recent_messages = maybe_summarise(body.conversation_id, history.messages, _llm)
+
+    chat_history = []
+    if summary:
+        chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
+    chat_history.extend(recent_messages)
+
+    async def generate():
+        full_response = ""
+        try:
+            async for chunk in agent_executor.astream(
+                {"input": body.message, "chat_history": chat_history}
+            ):
+                # astream yields intermediate steps and the final output — we only want text chunks
+                if "output" in chunk:
+                    token = chunk["output"]
+                    full_response += token
+                    yield f"data: {json.dumps({'text': token})}\n\n"
+                    await asyncio.sleep(0)  # yield control back to the event loop
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            return
+        finally:
+            if full_response:
+                history.add_user_message(body.message)
+                history.add_ai_message(full_response)
+                save_messages(body.conversation_id, history.messages)
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/chat/start")
