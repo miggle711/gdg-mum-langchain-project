@@ -1,7 +1,8 @@
 import logging
 from fastapi import APIRouter
 from pydantic import BaseModel
-from database import get_es, _get_redis
+from search import get_es
+from cache import _get_redis
 
 logger = logging.getLogger(__name__)
 

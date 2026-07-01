@@ -10,7 +10,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from database import save_messages, load_messages, maybe_summarise, _get_redis
+from conversations import save_messages, load_messages, maybe_summarise
+from cache import _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData
 from app.agent import agent_executor, _llm
 from app.limiter import limiter
