@@ -1,15 +1,15 @@
 import uuid
 from fastapi import APIRouter, HTTPException, Request
 from langchain_core.chat_history import InMemoryChatMessageHistory
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from database import save_messages, load_messages, _get_redis
+from database import save_messages, load_messages, maybe_summarise, _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData
-from app.agent import agent_executor
+from app.agent import agent_executor, _llm
 from app.limiter import limiter
 
 router = APIRouter()
@@ -32,9 +32,16 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         conversation = get_or_create_conversation(body.conversation_id)
         history = conversation["history"]
 
+        summary, recent_messages = maybe_summarise(body.conversation_id, history.messages, _llm)
+
+        chat_history = []
+        if summary:
+            chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
+        chat_history.extend(recent_messages)
+
         result = agent_executor.invoke({
             "input": body.message,
-            "chat_history": history.messages,
+            "chat_history": chat_history,
         })
         response_text = result["output"]
 

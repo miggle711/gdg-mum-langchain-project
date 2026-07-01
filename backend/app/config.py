@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     search_cache_ttl_seconds: int = 60 * 60 * 6
     search_cache_similarity_threshold: float = 0.92
     conversation_ttl_seconds: int = 60 * 60 * 24
+    conversation_summary_threshold: int = 20  # messages (10 turns) before summarising
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""
     langchain_project: str = "gdg-mum-langchain-project"
