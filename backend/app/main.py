@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings  # noqa: E402 — must come after sys.path insert
 from database import init_es_index
 from app.routes.chat import router as chat_router
+from app.routes.health import router as health_router
 
 init_es_index()
 
@@ -28,6 +29,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+app.include_router(health_router)
 
 
 @app.get("/")
