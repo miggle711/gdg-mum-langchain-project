@@ -1,12 +1,13 @@
 import os
+import sys
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
-import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools import PRODUCT_TOOLS
+from app.config import settings
 
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
 
@@ -26,16 +27,12 @@ Response guidelines:
 - When describing products, include price, rating, and number of reviews
 - If you don't know something about our specific products or policies, suggest they contact support"""
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY environment variable not set")
-
 # Shared singletons — created once at startup and reused across all conversations.
 # The LLM client, prompt, and AgentExecutor are stateless between calls;
 # per-conversation state lives entirely in the chat_history we pass in each invocation.
 _llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
-    google_api_key=GOOGLE_API_KEY,
+    google_api_key=settings.google_api_key,
     temperature=0.7,
 )
 

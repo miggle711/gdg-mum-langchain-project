@@ -1,4 +1,3 @@
-import os
 import json
 import logging
 import math
@@ -8,11 +7,12 @@ from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 from elasticsearch import Elasticsearch
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://gdg:gdg@localhost:5432/ecommerce")
-ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
+DATABASE_URL = settings.database_url
+ELASTICSEARCH_URL = settings.elasticsearch_url
 ES_INDEX = "products"
 
 EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
@@ -354,14 +354,14 @@ def get_categories() -> List[Dict[str, Any]]:
 
 # Redis connection pool — created once, reused across all requests
 _redis_pool = redis.ConnectionPool.from_url(
-    os.getenv("REDIS_URL", "redis://localhost:6379"),
+    settings.redis_url,
     decode_responses=True,
     max_connections=20,
 )
 
-CONVERSATION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
-SEARCH_CACHE_TTL_SECONDS = 60 * 60 * 6   # 6 hours
-SEARCH_CACHE_SIMILARITY_THRESHOLD = 0.92  # cosine similarity threshold for cache hit
+CONVERSATION_TTL_SECONDS = settings.conversation_ttl_seconds
+SEARCH_CACHE_TTL_SECONDS = settings.search_cache_ttl_seconds
+SEARCH_CACHE_SIMILARITY_THRESHOLD = settings.search_cache_similarity_threshold
 
 
 def _get_redis() -> redis.Redis:
