@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.limiter import limiter
-from database import init_es_index
+from database import init_es_index, init_cache_index
 from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
 
 init_es_index()
+init_cache_index()
 
 app = FastAPI(title="LangChain Conversation API")
 
