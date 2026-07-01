@@ -3,7 +3,6 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     google_api_key: str
-    database_url: str = "postgresql://gdg:gdg@localhost:5432/ecommerce"
     redis_url: str = "redis://localhost:6379"
     elasticsearch_url: str = "http://localhost:9200"
     search_cache_ttl_seconds: int = 60 * 60 * 6
