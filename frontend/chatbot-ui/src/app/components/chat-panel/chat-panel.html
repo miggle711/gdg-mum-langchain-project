@@ -21,7 +21,24 @@
   }
   @for (message of messages; track $index) {
     <div class="message" [class.user]="message.role === 'user'" [class.assistant]="message.role === 'assistant'">
-      {{ message.text }}
+      <div class="message-text">{{ message.text }}</div>
+
+      @if (message.role === 'assistant' && message.traceId) {
+        <div class="feedback-row">
+          <button mat-icon-button class="feedback-btn"
+            (click)="rateFeedback($index, true)"
+            [disabled]="message.feedback !== undefined"
+            aria-label="Good response">
+            <mat-icon>{{ message.feedback === true ? 'thumb_up' : 'thumb_up_off_alt' }}</mat-icon>
+          </button>
+          <button mat-icon-button class="feedback-btn"
+            (click)="rateFeedback($index, false)"
+            [disabled]="message.feedback !== undefined"
+            aria-label="Bad response">
+            <mat-icon>{{ message.feedback === false ? 'thumb_down' : 'thumb_down_off_alt' }}</mat-icon>
+          </button>
+        </div>
+      }
     </div>
   }
   @if (isLoading) {

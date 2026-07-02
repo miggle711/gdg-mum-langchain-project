@@ -47,7 +47,7 @@ export class ChatPanel implements AfterViewChecked, OnInit {
   //   { role: 'user', text: 'How are you?' },
   //   { role: 'assistant', text: 'I\'m doing great!' },
   // ]
-  messages: { role: 'user' | 'assistant'; text: string }[] = [];
+  messages: { role: 'user' | 'assistant'; text: string; traceId?: string; feedback?: boolean }[] = [];
   private shouldScroll = false;
 
   // add the Chat service from the services folder, which is responsible for communicating with the backend API to start conversations and send messages,
@@ -125,6 +125,10 @@ export class ChatPanel implements AfterViewChecked, OnInit {
 
     this.chat.sendStream(
       text,
+      (traceId) => {
+        this.messages[assistantIndex].traceId = traceId;
+        this.cdr.markForCheck();
+      },
       (token) => {
         this.messages[assistantIndex].text += token;
         this.shouldScroll = true;
@@ -142,5 +146,19 @@ export class ChatPanel implements AfterViewChecked, OnInit {
         this.cdr.markForCheck();
       },
     );
+  }
+
+  rateFeedback(index: number, value: boolean) {
+    const msg = this.messages[index];
+    if (!msg.traceId || msg.feedback !== undefined) return; // no trace yet, or already rated
+    msg.feedback = value;
+    this.cdr.markForCheck();
+    this.chat.sendFeedback(msg.traceId, value).subscribe({
+      error: (err) => {
+        console.error('Failed to send feedback', err);
+        msg.feedback = undefined; // allow retry on failure
+        this.cdr.markForCheck();
+      },
+    });
   }
 }
