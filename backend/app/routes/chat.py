@@ -166,3 +166,17 @@ def list_conversations():
             for key in keys
         ]
     }
+
+@router.post("/feedback")
+def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
+    try:
+        langfuse_client.create_score(
+            trace_id=body.trace_id,
+            name="user-feedback",
+            value=body.value,
+            data_type="BOOLEAN",
+            comment=body.comment,
+        )
+        return FeedbackResponse(message="Feedback recorded")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
