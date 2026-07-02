@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import HumanMessage, SystemMessage
+from langfuse import propagate_attributes
 import sys
 import os
 
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from conversations import save_messages, load_messages, maybe_summarise
 from cache import _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData
-from app.agent import agent_executor, _llm
+from app.agent import agent_executor, _llm, langfuse_handler
 from app.limiter import limiter
 
 router = APIRouter()
@@ -152,3 +153,16 @@ def list_conversations():
             for key in keys
         ]
     }
+
+# to group traces by conversation
+with propagate_attributes(
+    session_id=body.conversation_id,
+    trace_name="ecommerce-chat",
+):
+    result = agent_executor.invoke(
+        {
+            "input": body.message,
+            "chat_history": history.messages,
+        },
+        config={"callbacks": [langfuse_handler]},
+    )
