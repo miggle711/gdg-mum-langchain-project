@@ -1,6 +1,6 @@
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
-from database import query_products, get_categories, semantic_search, EMBEDDING_MODEL
+from search import query_products, get_categories, semantic_search, EMBEDDING_MODEL
 from sentence_transformers import SentenceTransformer
 from typing import Optional
 import json
