@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""
     langchain_project: str = "gdg-mum-langchain-project"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://cloud.langfuse.com"
 
     class Config:
         env_file = ".env"

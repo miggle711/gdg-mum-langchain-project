@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import HumanMessage, SystemMessage
+from langfuse import propagate_attributes
+from langfuse.langchain import CallbackHandler
 import sys
 import os
 
@@ -12,8 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from conversations import save_messages, load_messages, maybe_summarise
 from cache import _get_redis
-from app.models import ChatRequest, ChatResponse, ConversationData
-from app.agent import agent_executor, _llm
+from app.models import ChatRequest, ChatResponse, ConversationData, FeedbackRequest, FeedbackResponse
+from app.agent import agent_executor, _llm, langfuse_handler, langfuse_client
 from app.limiter import limiter
 
 router = APIRouter()
@@ -43,10 +45,13 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
         chat_history.extend(recent_messages)
 
-        result = agent_executor.invoke({
-            "input": body.message,
-            "chat_history": chat_history,
-        })
+        with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat"):
+            result = agent_executor.invoke(
+                {"input": body.message, "chat_history": chat_history},
+                config={"callbacks": [langfuse_handler]},
+            )
+            trace_id = langfuse_client.get_current_trace_id()
+
         response_text = result["output"]
 
         history.add_user_message(body.message)
@@ -57,6 +62,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             conversation_id=body.conversation_id,
             response=response_text or "I apologize, but I'm having trouble generating a response at the moment.",
             message_count=len(history.messages) // 2,
+            trace_id=trace_id,
         )
     except Exception as e:
         print(f"Exception in chat: {str(e)}")
@@ -76,18 +82,26 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
         chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
     chat_history.extend(recent_messages)
 
+    # Generate the trace_id upfront so we can send it to the frontend
+    # before any tokens stream back — it needs to be attached to this
+    # specific message for the feedback buttons.
+    trace_id = langfuse_client.create_trace_id()
+    stream_handler = CallbackHandler(trace_context={"trace_id": trace_id})
+
     async def generate():
         full_response = ""
+        yield f"data: {json.dumps({'trace_id': trace_id})}\n\n"
         try:
-            async for chunk in agent_executor.astream(
-                {"input": body.message, "chat_history": chat_history}
-            ):
-                # astream yields intermediate steps and the final output — we only want text chunks
-                if "output" in chunk:
-                    token = chunk["output"]
-                    full_response += token
-                    yield f"data: {json.dumps({'text': token})}\n\n"
-                    await asyncio.sleep(0)  # yield control back to the event loop
+            with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat-stream"):
+                async for chunk in agent_executor.astream(
+                    {"input": body.message, "chat_history": chat_history},
+                    config={"callbacks": [stream_handler]},
+                ):
+                    if "output" in chunk:
+                        token = chunk["output"]
+                        full_response += token
+                        yield f"data: {json.dumps({'text': token})}\n\n"
+                        await asyncio.sleep(0)  # yield control back to the event loop
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
@@ -152,3 +166,17 @@ def list_conversations():
             for key in keys
         ]
     }
+
+@router.post("/feedback")
+def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
+    try:
+        langfuse_client.create_score(
+            trace_id=body.trace_id,
+            name="user-feedback",
+            value=body.value,
+            data_type="BOOLEAN",
+            comment=body.comment,
+        )
+        return FeedbackResponse(message="Feedback recorded")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

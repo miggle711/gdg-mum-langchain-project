@@ -3,6 +3,8 @@ import sys
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langfuse.langchain import CallbackHandler
+from langfuse import get_client
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -50,3 +52,10 @@ agent_executor = AgentExecutor(
     handle_parsing_errors=True,
     max_iterations=5,
 )
+
+# Shared singleton — Langfuse handler picks up LANGFUSE_PUBLIC_KEY / 
+# LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL from env automatically
+langfuse_handler = CallbackHandler()
+
+# used later for create_score()
+langfuse_client = get_client()

@@ -52,6 +52,7 @@ export class Chat {
   // Calls onToken for each text chunk and onDone when the stream ends.
   async sendStream(
     userPrompt: string,
+    onTraceId: (traceId: string) => void,
     onToken: (token: string) => void,
     onDone: (fullText: string) => void,
     onError: (err: string) => void,
@@ -97,6 +98,10 @@ export class Chat {
             onError(parsed.error);
             return;
           }
+          if (parsed.trace_id) {
+            onTraceId(parsed.trace_id);
+            continue;
+          }
           if (parsed.text) {
             fullText += parsed.text;
             onToken(parsed.text);
@@ -117,6 +122,10 @@ export class Chat {
 
   setConversationId(id: string): void {
     this.conversationId = id;
+  }
+
+  sendFeedback(traceId: string, value: boolean, comment?: string) {
+    return this.http.post(`${this.apiUrl}/feedback`, { trace_id: traceId, value, comment });
   }
 }
 

@@ -100,7 +100,12 @@
   word-break: break-word;
   font-size: 14px;
   line-height: 1.55;
-  display: block;
+  display: flex;
+  flex-direction: column;
+  white-space: pre-wrap;
+}
+
+.message-text {
   white-space: pre-wrap;
 }
 
@@ -116,6 +121,30 @@
   background: var(--mat-sys-primary);
   color: var(--mat-sys-on-primary);
   border-radius: 24px;
+}
+
+.feedback-row {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+
+  .feedback-btn {
+    width: 24px;
+    height: 24px;
+    line-height: 24px;
+    padding: 0;
+
+    mat-icon {
+      font-size: 15px;
+      width: 15px;
+      height: 15px;
+      color: var(--mat-sys-outline);
+    }
+
+    &[aria-label="Good response"] mat-icon {
+      color: var(--mat-sys-on-surface);
+    }
+  }
 }
 
 .input-row {
