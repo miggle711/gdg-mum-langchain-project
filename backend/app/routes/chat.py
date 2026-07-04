@@ -1,6 +1,9 @@
 import uuid
 import json
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.chat_history import InMemoryChatMessageHistory
@@ -15,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from conversations import save_messages, load_messages, maybe_summarise
 from cache import _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData, FeedbackRequest, FeedbackResponse
-from app.agent import agent_executor, _llm, langfuse_handler, langfuse_client
+from app.agent import agent_executor, _llm, langfuse_client
 from app.limiter import limiter
 
 router = APIRouter()
@@ -45,12 +48,12 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
         chat_history.extend(recent_messages)
 
-        with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat"):
-            result = agent_executor.invoke(
-                {"input": body.message, "chat_history": chat_history},
-                config={"callbacks": [langfuse_handler]},
-            )
-            trace_id = langfuse_client.get_current_trace_id()
+        trace_id = langfuse_client.create_trace_id()
+        handler = CallbackHandler(trace_context={"trace_id": trace_id})
+        result = agent_executor.invoke(
+            {"input": body.message, "chat_history": chat_history},
+            config={"callbacks": [handler]},
+        )
 
         response_text = result["output"]
 
@@ -65,7 +68,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             trace_id=trace_id,
         )
     except Exception as e:
-        print(f"Exception in chat: {str(e)}")
+        logger.exception("Exception in chat: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
