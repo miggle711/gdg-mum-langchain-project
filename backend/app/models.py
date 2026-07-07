@@ -1,12 +1,11 @@
 from pydantic import BaseModel
 from langchain_core.chat_history import InMemoryChatMessageHistory
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 
 class ChatRequest(BaseModel):
     conversation_id: str
     message: str
-    system_prompt: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -18,7 +17,6 @@ class ChatResponse(BaseModel):
 
 class ConversationData(TypedDict):
     history: InMemoryChatMessageHistory
-    is_new: bool
 
 class FeedbackRequest(BaseModel):
     trace_id: str
