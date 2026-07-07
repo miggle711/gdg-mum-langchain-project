@@ -30,7 +30,6 @@ def get_or_create_conversation(conversation_id: str) -> ConversationData:
     history.add_messages(messages)
     return {
         "history": history,
-        "is_new": len(messages) == 0,
     }
 
 

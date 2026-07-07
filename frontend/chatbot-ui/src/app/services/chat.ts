@@ -34,7 +34,7 @@ export class Chat {
     );
   }
 
-  send(userPrompt: string, systemPrompt?: string): Observable<ChatResponse> {
+  send(userPrompt: string): Observable<ChatResponse> {
     if (!this.conversationId) {
       throw new Error('Conversation not started. Call startConversation() first.');
     }
