@@ -180,4 +180,4 @@ This generates BGE embeddings for each product and bulk-indexes them — see [ba
 - Conversations are stored in Redis with a TTL (`conversation_ttl_seconds`, default 24h) — they survive backend restarts but expire eventually, not "forever."
 - The system prompt is hardcoded in `backend/app/agent.py` for ecommerce customer service; it is not currently configurable per-request.
 - Elasticsearch and Redis indices are created automatically on backend startup if they don't already exist (`init_es_index`, `init_cache_index`) — this happens synchronously at import time, so the backend will fail to start if either service is unreachable.
-- See [docs/decisions.md](docs/decisions.md) for why certain architecture choices were made (e.g. ConversationChain → AgentExecutor, LangSmith → Langfuse).
+- See [docs/decisions.md](docs/decisions.md) for why certain architecture choices were made (e.g. ConversationChain to AgentExecutor, LangSmith to Langfuse).
