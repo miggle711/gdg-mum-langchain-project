@@ -141,6 +141,18 @@ docker compose exec backend python scripts/index_products.py
 
 This generates BGE embeddings for each product and bulk-indexes them — see [backend/DATABASE.md](backend/DATABASE.md) for details.
 
+### Running Tests
+
+Backend unit tests cover the pure logic in `search.py`, `cache.py`, `conversations.py`, and `tools.py` with Elasticsearch/Redis/the embedding model mocked out — no external services required:
+
+```bash
+cd backend
+pip install -r requirements.txt
+pytest
+```
+
+These also run automatically in CI (`.github/workflows/backend-tests.yml`) on every push/PR to `main`.
+
 ### Setup Guides
 
 - **[DOCKER_SETUP.md](DOCKER_SETUP.md)** — Docker prerequisites, environment setup, troubleshooting
