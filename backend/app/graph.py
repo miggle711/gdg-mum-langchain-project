@@ -1,10 +1,19 @@
 # backend/app/graph.py
+import logging
 from typing import Any, Dict, Literal, TypedDict
 
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import BaseMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 Intent = Literal["product_details", "small_talk", "sensitive_topic", "clarify"]
+ALLOWED_INTENTS = {"product_details", "small_talk", "sensitive_topic", "clarify"}
 
 
 class GraphState(TypedDict, total=False):
@@ -14,19 +23,72 @@ class GraphState(TypedDict, total=False):
     response: str
 
 
+class IntentClassification(BaseModel):
+    intent: Intent = Field(
+        description="The best matching intent label for the user's message.",
+    )
+
+
+_INTENT_CLASSIFIER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """Classify the user's message into exactly one ecommerce routing intent.
+
+Intents:
+- product_details: shopping intent, including product search, recommendations, comparisons, prices, availability, product attributes, or follow-up product questions.
+- small_talk: greetings, thanks, farewells, or casual conversation unrelated to shopping.
+- sensitive_topic: self-harm, violence, abuse, threats, illegal wrongdoing, or safety-sensitive content.
+- clarify: unclear messages that cannot be routed using the current message or chat history.
+
+Rules:
+- Use chat history to resolve follow-ups like "what about one in blue?"
+- Prefer product_details when the user is asking about buying, comparing, finding, or choosing products.
+- Prefer sensitive_topic whenever safety risk is present.
+- Use clarify only when no other intent clearly fits.
+
+Examples:
+- "Show me waterproof jackets under $100" -> product_details
+- "What about one in blue?" after discussing jackets -> product_details
+- "Can you compare laptops for college?" -> product_details
+- "Hey, how are you?" -> small_talk
+- "Thanks, that's all" -> small_talk
+- "I want to hurt someone" -> sensitive_topic
+- "asdf qwerty" -> clarify
+
+Return only the best intent label.""",
+        ),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ("human", "{input}"),
+    ]
+)
+
+_intent_llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=settings.google_api_key,
+    temperature=0,
+)
+
+_intent_classifier = _INTENT_CLASSIFIER_PROMPT | _intent_llm.with_structured_output(IntentClassification)
+
+
 def classify_intent(state: GraphState) -> Dict[str, Any]:
-    text = state.get("input", "").lower()
+    try:
+        result = _intent_classifier.invoke(
+            {
+                "input": state.get("input", ""),
+                "chat_history": state.get("chat_history", []),
+            }
+        )
+    except Exception:
+        logger.exception("Intent classification failed; falling back to clarify")
+        return {"intent": "clarify"}
 
-    if any(word in text for word in ["sensitive"]):
-        return {"intent": "sensitive_topic"}
+    intent = getattr(result, "intent", "clarify")
+    if intent not in ALLOWED_INTENTS:
+        return {"intent": "clarify"}
 
-    if any(word in text for word in ["small talk"]):
-        return {"intent": "small_talk"}
-
-    if any(word in text for word in ["search product"]):
-        return {"intent": "product_details"}
-
-    return {"intent": "clarify"}
+    return {"intent": intent}
 
 
 def product_node(state: GraphState) -> Dict[str, Any]:
