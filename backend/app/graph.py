@@ -91,8 +91,25 @@ def classify_intent(state: GraphState) -> Dict[str, Any]:
     return {"intent": intent}
 
 
+def _invoke_product_agent(state: GraphState) -> Dict[str, Any]:
+    from app.agent import agent_executor
+
+    return agent_executor.invoke(
+        {
+            "input": state.get("input", ""),
+            "chat_history": state.get("chat_history", []),
+        }
+    )
+
+
 def product_node(state: GraphState) -> Dict[str, Any]:
-    return {"response": "product node placeholder"}
+    result = _invoke_product_agent(state)
+    response = result.get("output")
+
+    if response:
+        return {"response": response}
+
+    return {"response": "I apologize, but I'm having trouble generating a response at the moment."}
 
 
 def small_talk_node(state: GraphState) -> Dict[str, Any]:

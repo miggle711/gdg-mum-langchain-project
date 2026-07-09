@@ -73,6 +73,36 @@ def test_graph_compiles():
 
     assert graph.chat_graph is not None
 
+
+def test_product_node_uses_product_agent(mocker):
+    import app.graph as graph
+
+    mock_invoke = mocker.patch.object(
+        graph,
+        "_invoke_product_agent",
+        return_value={"output": "Here are three laptop options under $900."},
+    )
+
+    state = {
+        "input": "Show me laptops under $900",
+        "chat_history": [HumanMessage(content="I need something for school.")],
+    }
+
+    assert graph.product_node(state) == {
+        "response": "Here are three laptop options under $900."
+    }
+    mock_invoke.assert_called_once_with(state)
+
+
+def test_product_node_falls_back_when_agent_returns_no_output(mocker):
+    import app.graph as graph
+
+    mocker.patch.object(graph, "_invoke_product_agent", return_value={})
+
+    assert graph.product_node({"input": "Find a coffee grinder"}) == {
+        "response": "I apologize, but I'm having trouble generating a response at the moment."
+    }
+
 # Tests live LLM classification (requires a real GOOGLE_API_KEY)
 @pytest.mark.llm
 @pytest.mark.skipif(
