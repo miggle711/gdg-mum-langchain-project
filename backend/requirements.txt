@@ -14,5 +14,9 @@ datasets==2.19.0
 prometheus-fastapi-instrumentator==6.1.0
 prometheus-client==0.20.0
 langfuse>=3.0,<4
+sqlalchemy==2.0.36
+alembic==1.13.3
+psycopg2-binary==2.9.9
+Faker==26.0.0
 pytest==8.3.4
 pytest-mock==3.14.0
