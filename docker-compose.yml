@@ -20,6 +20,22 @@ services:
       timeout: 5s
       retries: 10
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ecommerce
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ecommerce"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
@@ -29,14 +45,14 @@ services:
         condition: service_started
       elasticsearch:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - REDIS_URL=redis://redis:6379
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
-      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
-      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-gdg-mum-langchain-project}
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ecommerce
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
@@ -52,3 +68,4 @@ services:
 
 volumes:
   es_data:
+  postgres_data:

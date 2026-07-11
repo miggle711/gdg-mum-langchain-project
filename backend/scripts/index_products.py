@@ -7,7 +7,7 @@ Usage (from inside the backend container):
 Or from the host:
     docker compose exec backend python scripts/index_products.py
 
-Loads 3 Amazon categories (~5k products), generates BGE embeddings,
+Loads 4 Amazon categories (~2k products), generates BGE embeddings,
 and bulk-indexes into the 'products' ES index.
 """
 
@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_es, init_es_index, es_bulk_index, ES_INDEX, EMBEDDING_MODEL, EMBEDDING_DIM
+from search import get_es, init_es_index, es_bulk_index, ES_INDEX, EMBEDDING_MODEL, EMBEDDING_DIM
 from sentence_transformers import SentenceTransformer
 from datasets import load_dataset
 
@@ -32,12 +32,8 @@ BATCH_SIZE = 256
 CATEGORY_DISPLAY = {
     "Sports_and_Outdoors": "Sports & Outdoors",
     "Electronics": "Electronics",
-    "Beauty_and_Personal_Care": "Beauty & Personal Care",
-    "Toys_and_Games": "Toys & Games",
     "Home_and_Kitchen": "Home & Kitchen",
-    "Pet_Supplies": "Pet Supplies",
-    "Clothing_Shoes_and_Jewelry": "Clothing, Shoes & Jewelry",
-    "Video_Games": "Video Games",
+    "Toys_and_Games": "Toys & Games",
 }
 
 
