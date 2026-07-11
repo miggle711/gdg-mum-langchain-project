@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     google_api_key: str
     redis_url: str = "redis://localhost:6379"
     elasticsearch_url: str = "http://localhost:9200"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ecommerce"
     search_cache_ttl_seconds: int = 60 * 60 * 6
     search_cache_similarity_threshold: float = 0.92
     conversation_ttl_seconds: int = 60 * 60 * 24
