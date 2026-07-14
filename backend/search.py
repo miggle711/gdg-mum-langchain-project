@@ -58,6 +58,27 @@ def init_es_index() -> None:
     })
 
 
+def seed_products_if_empty() -> None:
+    """Fresh deployments (new clone, new machine, CI) otherwise start with
+    an empty index and silently return no search results — see issue #39.
+    Only ever runs the (slow) dataset download + embedding step once, on
+    the first boot against an empty index; every subsequent boot is a
+    cheap es.count() check."""
+    es = get_es()
+    es.indices.refresh(index=ES_INDEX)
+    count = es.count(index=ES_INDEX)["count"]
+    if count > 0:
+        logger.info("Elasticsearch index '%s' already has %d documents, skipping seed.", ES_INDEX, count)
+        return
+
+    logger.info("Elasticsearch index '%s' is empty — seeding sample product catalog...", ES_INDEX)
+    from scripts.index_products import load_amazon_products
+
+    docs = load_amazon_products()
+    es_bulk_index(docs)
+    logger.info("Seeded %d products into '%s'.", len(docs), ES_INDEX)
+
+
 def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
     from elasticsearch.helpers import bulk
     es = get_es()
