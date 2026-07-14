@@ -4,15 +4,12 @@ import pytest
 
 
 @pytest.fixture
-def tools_module(mocker):
-    """tools.py instantiates a SentenceTransformer at import time (line 9);
-    stub it out so importing the module doesn't try to download/load the
-    real BGE model.
+def tools_module(mock_embedding_model):
+    """tools.py gets its embedding model via search.get_embedding_model()
+    (a lazy singleton), mocked by the mock_embedding_model fixture so
+    importing tools.py doesn't try to download/load the real BGE model.
     """
-    mocker.patch("sentence_transformers.SentenceTransformer")
     import tools
-    import importlib
-    importlib.reload(tools)
     return tools
 
 
@@ -74,21 +71,21 @@ def test_query_products_impl_catches_exceptions(mocker, tools_module):
     assert result["error"] == "ES is down"
 
 
-def test_semantic_search_impl_uses_bge_retrieval_prefix(mocker, tools_module):
-    tools_module._embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+def test_semantic_search_impl_uses_bge_retrieval_prefix(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
     mock_search = mocker.patch("tools.semantic_search", return_value=[])
 
     tools_module.semantic_search_impl("cozy winter blanket")
 
-    encode_call = tools_module._embedding_model.encode.call_args
+    encode_call = mock_embedding_model.encode.call_args
     assert encode_call.args[0] == "Represent this sentence for searching relevant passages: cozy winter blanket"
     assert encode_call.kwargs["normalize_embeddings"] is True
     # original (unprefixed) query text is passed through to semantic_search
     assert mock_search.call_args.args[0] == "cozy winter blanket"
 
 
-def test_semantic_search_impl_defaults_limit_to_5_when_none(mocker, tools_module):
-    tools_module._embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+def test_semantic_search_impl_defaults_limit_to_5_when_none(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
     mock_search = mocker.patch("tools.semantic_search", return_value=[])
 
     tools_module.semantic_search_impl("blanket", limit=None)
@@ -96,8 +93,8 @@ def test_semantic_search_impl_defaults_limit_to_5_when_none(mocker, tools_module
     assert mock_search.call_args.kwargs["limit"] == 5
 
 
-def test_semantic_search_impl_formats_similarity_as_percent(mocker, tools_module):
-    tools_module._embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+def test_semantic_search_impl_formats_similarity_as_percent(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
     mocker.patch("tools.semantic_search", return_value=[{
         "id": "p1", "name": "Blanket", "price": 29.99, "originalprice": None,
         "rating": 4.2, "reviews": 8, "category_name": "Home", "similarity": 0.873,
@@ -108,8 +105,8 @@ def test_semantic_search_impl_formats_similarity_as_percent(mocker, tools_module
     assert result["results"][0]["similarity"] == "87%"
 
 
-def test_semantic_search_impl_catches_exceptions(mocker, tools_module):
-    tools_module._embedding_model.encode.side_effect = RuntimeError("model error")
+def test_semantic_search_impl_catches_exceptions(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.side_effect = RuntimeError("model error")
 
     result = json.loads(tools_module.semantic_search_impl("blanket"))
 
