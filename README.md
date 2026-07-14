@@ -1,10 +1,10 @@
 # gdg-mum-langchain-project
 
-A LangChain-powered ecommerce customer service chatbot: an Angular frontend, a FastAPI backend running a Gemini-based tool-calling agent, hybrid product search over Elasticsearch, and a Redis-backed semantic cache and conversation store. Deployed with Docker.
+A LangGraph-routed ecommerce customer service chatbot: an Angular frontend, a FastAPI backend, Gemini-based product search over Elasticsearch, and a Redis-backed semantic cache and conversation store. Deployed with Docker.
 
 ## Overview
 
-The backend exposes a chat agent that can search a product catalog and answer customer questions about it. On each turn, a LangChain `AgentExecutor` (Gemini 2.5 Flash) decides whether to call one of three product tools, then responds using the results. Conversation history and summaries live in Redis so the agent stays stateful across requests without keeping anything in process memory. Every chat call is traced in Langfuse, and users can leave thumbs up/down feedback tied to that trace.
+The backend now exposes a LangGraph chat workflow that classifies each user turn into one of four intents: `product_details`, `small_talk`, `sensitive_topic`, or `clarify`. Product queries route into the existing Gemini tool-calling product runtime; the other branches return dedicated non-tool responses. Conversation history and summaries live in Redis so the app stays stateful across requests without keeping anything in process memory. Every chat call is traced in Langfuse, and users can leave thumbs up/down feedback tied to that trace.
 
 Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch candidates, a cross-encoder reranks them for relevance, and a Redis vector index caches results by query embedding so near-duplicate questions skip the expensive path.
 
@@ -13,7 +13,8 @@ Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch can
 **Backend:**
 
 - FastAPI, Pydantic (`pydantic-settings` for config)
-- LangChain (`AgentExecutor` + tool calling) with `langchain-google-genai` (Gemini 2.5 Flash)
+- LangGraph for intent routing and branch orchestration
+- LangChain tool-calling runtime with `langchain-google-genai` (Gemini 2.5 Flash)
 - Elasticsearch: product catalog, hybrid (BM25 + kNN) search
 - `sentence-transformers`: `BAAI/bge-base-en-v1.5` embeddings, `cross-encoder/ms-marco-MiniLM-L-6-v2` reranker
 - Redis Stack: conversation history/summaries, rate-limit counters, semantic search cache (vector index)
@@ -33,14 +34,38 @@ Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch can
 ## Architecture
 
 1. **Frontend** calls `POST /chat/start` on load; the backend generates a `conversation_id` and returns a welcome message.
-2. **Frontend** sends each user message to `POST /chat` (or `/chat/stream` for token streaming) with that `conversation_id`.
-3. **Backend** loads prior messages for that conversation from Redis, summarising older turns once the history passes a configurable threshold (`conversation.py`'s `maybe_summarise`), then invokes the LangChain agent with the user's message and recent history.
-4. **The agent** (Gemini 2.5 Flash + `ECOMMERCE_SYSTEM_PROMPT`) decides whether to call a tool:
+2. **Frontend** sends each user message to `POST /chat` (or `/chat/stream`) with that `conversation_id`.
+3. **Backend** loads prior messages for that conversation from Redis, summarising older turns once the history passes a configurable threshold (`conversations.py`'s `maybe_summarise`), then invokes `chat_graph` with the user's message and recent history.
+4. **LangGraph** classifies the turn into one of four branches:
+   - `product_details` — routes into the existing Gemini tool-calling product runtime
+   - `small_talk` — handles casual conversation without product tools
+   - `sensitive_topic` — handles safety-sensitive prompts without product tools
+   - `clarify` — asks the user to clarify unclear intent
+5. **The product runtime** (`backend/app/agent.py`) decides whether to call a product tool:
    - `semantic_search` — vague/descriptive queries ("something cozy for winter"), backed by the ES hybrid search + rerank pipeline
    - `query_products` — exact filters (category, price range, rating), backed by a plain ES bool query
    - `list_categories` — so the agent uses exact category names rather than guessing
-5. **Backend** saves the updated conversation back to Redis, and returns the response along with a `trace_id` for Langfuse.
-6. **Frontend** can submit feedback (thumbs up/down) against that `trace_id` via `POST /feedback`.
+6. **Backend** saves the updated conversation back to Redis, and returns the response along with a `trace_id` for Langfuse.
+7. **Frontend** can submit feedback (thumbs up/down) against that `trace_id` via `POST /feedback`.
+
+### LangGraph architecture (`backend/app/graph.py`)
+
+```mermaid
+flowchart TD
+    S([START]) --> CI[classify_intent]
+    CI -->|product_details| PN[product_node]
+    CI -->|small_talk| ST[small_talk_node]
+    CI -->|sensitive_topic| SN[sensitive_node]
+    CI -->|clarify| CN[clarify_node]
+
+    PN --> PR[Existing product runtime<br/>Gemini + tools]
+    PR --> E([END])
+    ST --> E
+    SN --> E
+    CN --> E
+```
+
+The current graph is intentionally simple: LangGraph owns intent classification and branching, while the `product_details` branch still delegates to the existing product tool-calling runtime in `backend/app/agent.py`.
 
 ### Search pipeline (`backend/search.py`, `backend/cache.py`)
 
@@ -67,7 +92,8 @@ sequenceDiagram
     participant FE as Angular Frontend
     participant BE as FastAPI (/chat)
     participant R as Redis
-    participant Agent as LangChain Agent<br/>(Gemini 2.5 Flash)
+    participant Graph as LangGraph Router
+    participant Product as Product Runtime<br/>(Gemini 2.5 Flash + tools)
     participant LF as Langfuse
 
     U->>FE: Open chat
@@ -79,16 +105,22 @@ sequenceDiagram
     BE->>R: load_messages(conversation_id)
     R-->>BE: prior messages (+ summary if any)
     alt history over summary threshold
-        BE->>Agent: summarise older turns (LLM call)
-        Agent-->>BE: summary text
+        BE->>Product: summarise older turns (LLM call)
+        Product-->>BE: summary text
         BE->>R: save_summary + save_messages (trimmed)
     end
 
     BE->>LF: create_trace_id()
-    BE->>Agent: invoke(input, chat_history, callbacks=[Langfuse handler])
-    Agent->>Agent: pick a tool — semantic_search,<br/>query_products, or list_categories
-    Note over Agent: tool executes against Elasticsearch/Redis —<br/>see Search Pipeline diagram above
-    Agent-->>BE: final response text
+    BE->>LF: start request-level span
+    BE->>Graph: invoke(input, chat_history, callbacks=[Langfuse handler])
+    Graph->>Graph: classify intent and route branch
+    opt product_details branch
+        Graph->>Product: invoke(input, chat_history)
+        Product->>Product: pick a tool — semantic_search,<br/>query_products, or list_categories
+        Note over Product: tool executes against Elasticsearch/Redis —<br/>see Search Pipeline diagram above
+        Product-->>Graph: final product response
+    end
+    Graph-->>BE: {intent, response}
 
     BE->>R: save_messages(conversation_id, updated history)
     BE-->>FE: {response, trace_id}
@@ -101,15 +133,22 @@ sequenceDiagram
     end
 ```
 
-`/chat/stream` follows the same shape but streams agent output tokens over Server-Sent Events instead of returning one JSON payload.
+`/chat/stream` follows the same shape, but the current implementation emits a Server-Sent Events envelope consisting of:
+
+- a first event containing `trace_id`
+- one text event containing the final graph response
+- a terminal `[DONE]` event
+
+It does not currently stream token-by-token model output.
 
 ## Features
 
-- Tool-calling agent (LangChain `AgentExecutor`) over a real product catalog, not just a system-prompted chatbot
+- LangGraph-based intent routing across product, small-talk, sensitive-topic, and clarify branches
+- Tool-calling product runtime over a real product catalog, not just a system-prompted chatbot
 - Hybrid lexical + semantic product search with cross-encoder reranking
 - Semantic response caching in Redis (near-duplicate queries skip search entirely)
 - Server-side conversation history in Redis with automatic summarisation for long conversations
-- Streaming responses via Server-Sent Events (`/chat/stream`)
+- SSE-compatible chat responses via `/chat/stream` (`trace_id` -> `text` -> `[DONE]`)
 - Langfuse tracing on every chat turn, with user feedback (thumbs up/down) tied to a trace
 - Prometheus metrics (`/metrics`) — cache hit/miss counters, ES/rerank latency histograms, standard HTTP metrics
 - Per-IP rate limiting (20 requests/minute on chat endpoints), backed by Redis so it's consistent across replicas
@@ -151,6 +190,11 @@ pip install -r requirements.txt
 pytest
 ```
 
+LangGraph-specific coverage lives in:
+
+- `tests/test_graph_routing.py` — graph compilation, intent classification, and product-node behavior
+- `tests/test_chat_routes.py` — proves `/chat` and `/chat/stream` invoke `chat_graph` and preserve the API contract
+
 These also run automatically in CI (`.github/workflows/backend-tests.yml`) on every push/PR to `main`.
 
 ### Setup Guides
@@ -163,13 +207,15 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 ## Key Files
 
 - **backend/app/main.py** — FastAPI app setup: middleware, rate limiter, exception handling, startup (index/cache init)
-- **backend/app/agent.py** — LangChain agent definition (system prompt, LLM, tools, Langfuse client)
+- **backend/app/graph.py** — LangGraph state, intent classifier, branch routing, and Langfuse graph spans
+- **backend/app/agent.py** — product runtime (Gemini tool loop, tool bindings, Langfuse client)
 - **backend/app/routes/chat.py** — chat/stream/feedback/conversation endpoints
 - **backend/search.py** — Elasticsearch hybrid search, reranking, category listing
 - **backend/cache.py** — Redis semantic search cache (vector index)
 - **backend/conversations.py** — Redis-backed conversation history + summarisation
 - **backend/tools.py** — LangChain tool definitions the agent calls (wraps `search.py`)
 - **backend/scripts/index_products.py** — one-time script to load and embed sample product data
+- **backend/scripts/run_graph_prompt.py** — simple terminal script for invoking `chat_graph` directly
 - **backend/app/config.py** — centralized settings (`pydantic-settings`), single source of truth for all tunables
 - **frontend/chatbot-ui/src/app/services/chat.ts** — HTTP/SSE service layer for the chat API
 - **frontend/chatbot-ui/src/app/components/chat-panel/chat-panel.ts** — Chat UI with message handling
@@ -179,7 +225,7 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 
 - `POST /chat/start` — Initialize conversation, returns `conversation_id` and welcome message
 - `POST /chat` — Send message, returns AI response + `trace_id`
-- `POST /chat/stream` — Same as `/chat`, but streams the response token-by-token via SSE
+- `POST /chat/stream` — Same as `/chat`, but returns SSE events in the order `trace_id` -> `text` -> `[DONE]`
 - `GET /conversation/{id}` — Retrieve conversation history
 - `DELETE /conversation/{id}` — Delete conversation
 - `GET /conversations` — List all conversations
@@ -190,6 +236,9 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 ## Development Notes
 
 - Conversations are stored in Redis with a TTL (`conversation_ttl_seconds`, default 24h) — they survive backend restarts but expire eventually, not "forever."
-- The system prompt is hardcoded in `backend/app/agent.py` for ecommerce customer service; it is not currently configurable per-request.
+- The product branch is intentionally transitional: LangGraph owns routing, but `product_details` still delegates to the existing tool-calling runtime in `backend/app/agent.py`.
+- The system prompt for product requests is hardcoded in `backend/app/agent.py`; it is not currently configurable per-request.
+- `small_talk`, `sensitive_topic`, and `clarify` are currently lightweight graph-native branches and should be refined before treating them as production-quality conversational flows.
 - Elasticsearch and Redis indices are created automatically on backend startup if they don't already exist (`init_es_index`, `init_cache_index`) — this happens synchronously at import time, so the backend will fail to start if either service is unreachable.
-- See [docs/decisions.md](docs/decisions.md) for why certain architecture choices were made (e.g. ConversationChain to AgentExecutor, LangSmith to Langfuse).
+- Langfuse tracing now uses explicit request-level spans in `chat.py`, plus child spans from `graph.py`, so every request produces a visible trace even when no product tools are called.
+- See [docs/decisions.md](docs/decisions.md) for why certain architecture choices were made (e.g. ConversationChain to AgentExecutor to LangGraph, LangSmith to Langfuse).
