@@ -5,6 +5,7 @@ from typing import Any, Dict, Literal, TypedDict
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
@@ -72,13 +73,14 @@ _intent_llm = ChatGoogleGenerativeAI(
 _intent_classifier = _INTENT_CLASSIFIER_PROMPT | _intent_llm.with_structured_output(IntentClassification)
 
 
-def classify_intent(state: GraphState) -> Dict[str, Any]:
+def classify_intent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
     try:
         result = _intent_classifier.invoke(
             {
                 "input": state.get("input", ""),
                 "chat_history": state.get("chat_history", []),
-            }
+            },
+            config=config,
         )
     except Exception:
         logger.exception("Intent classification failed; falling back to clarify")
@@ -87,28 +89,25 @@ def classify_intent(state: GraphState) -> Dict[str, Any]:
     intent = getattr(result, "intent", "clarify")
     if intent not in ALLOWED_INTENTS:
         return {"intent": "clarify"}
-
     return {"intent": intent}
 
 
-def _invoke_product_agent(state: GraphState) -> Dict[str, Any]:
+def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
     from app.agent import agent_executor
-
     return agent_executor.invoke(
         {
             "input": state.get("input", ""),
             "chat_history": state.get("chat_history", []),
-        }
+        },
+        config=config,
     )
 
 
-def product_node(state: GraphState) -> Dict[str, Any]:
-    result = _invoke_product_agent(state)
+def product_node(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
+    result = _invoke_product_agent(state, config=config)
     response = result.get("output")
-
     if response:
         return {"response": response}
-
     return {"response": "I apologize, but I'm having trouble generating a response at the moment."}
 
 

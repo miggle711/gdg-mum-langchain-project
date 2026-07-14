@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from conversations import save_messages, load_messages, maybe_summarise
 from cache import _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData, FeedbackRequest, FeedbackResponse
-from app.agent import agent_executor, _llm, langfuse_client
+from app.agent import _llm, langfuse_client
+from app.graph import chat_graph
 from app.limiter import limiter
 
 router = APIRouter()
@@ -49,12 +50,12 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 
         trace_id = langfuse_client.create_trace_id()
         handler = CallbackHandler(trace_context={"trace_id": trace_id})
-        result = agent_executor.invoke(
+        result = chat_graph.invoke(
             {"input": body.message, "chat_history": chat_history},
             config={"callbacks": [handler]},
         )
 
-        response_text = result["output"]
+        response_text = result["response"]
 
         history.add_user_message(body.message)
         history.add_ai_message(response_text)
@@ -95,15 +96,27 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
         yield f"data: {json.dumps({'trace_id': trace_id})}\n\n"
         try:
             with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat-stream"):
-                async for chunk in agent_executor.astream(
+                result = chat_graph.invoke(
                     {"input": body.message, "chat_history": chat_history},
                     config={"callbacks": [stream_handler]},
-                ):
-                    if "output" in chunk:
-                        token = chunk["output"]
-                        full_response += token
-                        yield f"data: {json.dumps({'text': token})}\n\n"
-                        await asyncio.sleep(0)  # yield control back to the event loop
+                )
+                response_text = result["response"]
+                full_response = response_text
+                yield f"data: {json.dumps({'text': response_text})}\n\n"
+                await asyncio.sleep(0)
+            # TODO: Miguel, can you explain what does chat_stream does?
+            # TODO: Do i need to use the async generator to stream the response back to the client?
+
+            # with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat-stream"):
+            #     async for chunk in agent_executor.astream(
+            #         {"input": body.message, "chat_history": chat_history},
+            #         config={"callbacks": [stream_handler]},
+            #     ):
+            #         if "output" in chunk:
+            #             token = chunk["output"]
+            #             full_response += token
+            #             yield f"data: {json.dumps({'text': token})}\n\n"
+            #             await asyncio.sleep(0)  # yield control back to the event loop
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return

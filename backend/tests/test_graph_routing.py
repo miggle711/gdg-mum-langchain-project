@@ -91,7 +91,7 @@ def test_product_node_uses_product_agent(mocker):
     assert graph.product_node(state) == {
         "response": "Here are three laptop options under $900."
     }
-    mock_invoke.assert_called_once_with(state)
+    mock_invoke.assert_called_once_with(state, config=None)
 
 
 def test_product_node_falls_back_when_agent_returns_no_output(mocker):
