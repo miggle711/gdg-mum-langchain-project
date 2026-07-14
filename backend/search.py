@@ -15,6 +15,7 @@ EMBEDDING_DIM = 768
 
 _es: Optional[Elasticsearch] = None
 _reranker = None
+_embedding_model = None
 
 
 def get_es() -> Elasticsearch:
@@ -32,6 +33,16 @@ def get_reranker():
         _reranker = CrossEncoder(RERANKER_MODEL)
         logger.info("Reranker loaded.")
     return _reranker
+
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading embedding model: %s", EMBEDDING_MODEL)
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        logger.info("Embedding model loaded.")
+    return _embedding_model
 
 
 def init_es_index() -> None:
@@ -90,6 +101,29 @@ def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
 
     bulk(es, _actions())
     logger.info("Bulk indexing complete.")
+
+
+def es_upsert_document(doc: Dict[str, Any]) -> None:
+    """Index (create or fully replace) a single product document. Used by
+    the product write routes to keep ES in sync with Postgres without a
+    CDC pipeline called in the same request as the Postgres
+    write, after the Postgres commit succeeds."""
+    es = get_es()
+    es.index(index=ES_INDEX, id=doc["id"], document=doc)
+
+
+def es_delete_document(product_id: str) -> None:
+    """Delete a single product document. Safe/no-op if it doesn't exist
+    (e.g. never synced, or a retry after a partial failure)."""
+    es = get_es()
+    es.options(ignore_status=404).delete(index=ES_INDEX, id=product_id)
+
+
+def build_product_embedding(name: str, description: Optional[str]) -> List[float]:
+    """Same document-side instruction prefix as scripts/index_products.py,
+    so API-created products embed consistently with the seed dataset."""
+    text = f"Represent this product for retrieval: {name}. {description or ''}"
+    return get_embedding_model().encode(text, normalize_embeddings=True).tolist()
 
 
 def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:

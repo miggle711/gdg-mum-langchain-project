@@ -73,3 +73,37 @@ class OrderResponse(BaseModel):
 class CheckoutResponse(BaseModel):
     order: OrderResponse
     message: str
+
+
+class ProductCreateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    category: str
+    price: float
+    original_price: float | None = None
+    rating: float | None = None
+    reviews: int = 0
+    image: str | None = None
+
+
+class ProductUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    category: str | None = None
+    price: float | None = None
+    original_price: float | None = None
+    rating: float | None = None
+    reviews: int | None = None
+    image: str | None = None
+
+
+class ProductResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    category: str
+    price: float
+    original_price: float | None = None
+    rating: float | None = None
+    reviews: int
+    image: str | None = None

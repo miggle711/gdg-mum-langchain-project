@@ -1,0 +1,123 @@
+name: Chat API
+description: LangGraph shopping-assistant chat routes, conversation history, and feedback.
+item:
+  - name: Start conversation
+    request:
+      method: POST
+      url:
+        raw: "{{baseUrl}}/chat/start"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - chat
+          - start
+    event:
+      - listen: test
+        script:
+          exec:
+            - if (pm.response.code === 200) {
+            - "    const body = pm.response.json();"
+            - "    pm.globals.set('conversationId', body.conversation_id);"
+            - "}"
+
+  - name: Send message
+    request:
+      method: POST
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "conversation_id": "{{conversationId}}",
+            "message": "Can you recommend a gift for a fitness enthusiast?"
+          }
+      url:
+        raw: "{{baseUrl}}/chat"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - chat
+    event:
+      - listen: test
+        script:
+          exec:
+            - if (pm.response.code === 200) {
+            - "    const body = pm.response.json();"
+            - "    pm.globals.set('traceId', body.trace_id);"
+            - "}"
+
+  - name: Send message (stream)
+    request:
+      method: POST
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "conversation_id": "{{conversationId}}",
+            "message": "What categories do you have?"
+          }
+      url:
+        raw: "{{baseUrl}}/chat/stream"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - chat
+          - stream
+
+  - name: Get conversation history
+    request:
+      method: GET
+      url:
+        raw: "{{baseUrl}}/conversation/{{conversationId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - conversation
+          - "{{conversationId}}"
+
+  - name: List conversations
+    request:
+      method: GET
+      url:
+        raw: "{{baseUrl}}/conversations"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - conversations
+
+  - name: Submit feedback
+    request:
+      method: POST
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "trace_id": "{{traceId}}",
+            "value": true,
+            "comment": "Helpful recommendation"
+          }
+      url:
+        raw: "{{baseUrl}}/feedback"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - feedback
+
+  - name: Delete conversation
+    request:
+      method: DELETE
+      url:
+        raw: "{{baseUrl}}/conversation/{{conversationId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - conversation
+          - "{{conversationId}}"
