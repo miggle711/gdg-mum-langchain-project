@@ -1,8 +1,8 @@
 # Product Storage
 
-The backend uses **Elasticsearch** as the product catalog store, combining full-text (BM25) search, exact-match filtering, and vector (kNN) search in a single index. There is no relational database for products — the catalog is entirely document-based.
+The backend uses **Elasticsearch** as the product *search* store, combining full-text (BM25) search, exact-match filtering, and vector (kNN) search in a single index — this remains the read path for the `semantic_search`/`query_products`/`list_categories` agent tools. As of Phase 1 (see [Postgres (relational data)](#postgres-relational-data) below), **Postgres** also exists as a relational source of truth for products, users, addresses, and reviews, seeded independently from the same dataset. The two are not yet kept in sync with each other (no CDC — see the Notes section).
 
-For the full field-level index mapping and Redis key schemas, see [docs/db-models.md](../docs/db-models.md). This document covers setup, initialization, and the tool contracts the agent uses.
+For the full field-level index mapping, Postgres table schemas, and Redis key schemas, see [docs/db-models.md](../docs/db-models.md). This document covers setup, initialization, and the tool contracts the agent uses.
 
 ## Index
 
@@ -91,4 +91,35 @@ categories = get_categories()
 
 - The Redis semantic search cache (`cache.py`) sits in front of `semantic_search()` only — `query_products()` and `list_categories()` always hit Elasticsearch directly.
 - Cache entries expire after `SEARCH_CACHE_TTL_SECONDS` (default 6h, see `app/config.py`); there's no automatic invalidation when the underlying catalog changes, so a stale product update may not be reflected in cached semantic search results until the TTL elapses.
-- See [docs/cdc-reindex-pipeline.md](../docs/cdc-reindex-pipeline.md) for a planned (not yet implemented) design to keep the index live-synced with an external source-of-truth database via Debezium/Kafka CDC.
+- See [docs/cdc-reindex-pipeline.md](../docs/cdc-reindex-pipeline.md) for a planned (currently deferred — see issue #40) design to keep the index live-synced with an external source-of-truth database via Debezium/Kafka CDC.
+
+## Postgres (relational data)
+
+Phase 1 (issue #32) introduces Postgres as a relational store, separate from Elasticsearch. **ES remains the read path for the agent's search tools in Phase 1** — Postgres is additive, not yet a replacement for `query_products`/`semantic_search`. Whether product reads ever move onto Postgres is a future decision, not assumed here.
+
+**Tables**: `products`, `product_images` (1:N), `users`, `addresses` (1:N), `reviews` (1:N via `product_id`). See [docs/db-models.md](../docs/db-models.md) for the full field-level schema. `product_variants` was considered and explicitly dropped — the seed dataset has no real variant grouping (see issue #32). Cart/orders/payments are Phase 2, not yet built.
+
+**Async by design**: unlike `search.py`/`cache.py` (currently sync), the Postgres layer (`db.py`, `models_db.py`) uses async SQLAlchemy (`asyncpg`, `AsyncEngine`, `AsyncSession`) from the start. This is deliberate: issue #41 found the backend can't serve concurrent requests today (fully blocking event loop, single uvicorn worker) and scoped a full async rewrite as the fix. Rather than write this layer sync and redo it later, it's async from day one — the rest of the codebase remains sync until #41 is picked up separately.
+
+**Connection**: `DATABASE_URL` (see `app/config.py`), using the `postgresql+asyncpg://` scheme (required for `create_async_engine` to select the asyncpg driver). Local default: `postgresql+asyncpg://postgres:postgres@localhost:5432/ecommerce`. In `docker-compose.yml`, the `postgres` service maps host port **5433** (not 5432) to avoid conflicting with a native Postgres a developer might already have running locally — the container-internal port is still 5432, so backend↔postgres networking inside Docker is unaffected, only host-facing tools (e.g. `psql` from your own machine) need port 5433.
+
+For a hosted Supabase/Neon instance (anything beyond local dev — see issue #32 for why), override `DATABASE_URL` with the `postgresql+asyncpg://` scheme in that environment's env config. Note: some hosted providers front connections through a transaction-mode pooler (e.g. Supabase's pgbouncer) that doesn't support all wire-protocol features `asyncpg` relies on for prepared statements — use the provider's direct (non-pooled) connection string if you hit errors.
+
+**Migrations**: Alembic, run automatically at backend startup (`run_migrations()` in `db.py`, called from `app/main.py` alongside `init_es_index()`/`init_cache_index()`) — applies any pending migration on every boot, safe/idempotent since it's a no-op once the schema is at head. This differs from `init_es_index()`'s `create_all()`-style "create if missing" pattern: `alembic upgrade head` actually applies schema *changes*, not just initial creation, so it stays correct as the schema evolves. To run migrations manually (e.g. before running the seed script, without booting the full app):
+
+```bash
+docker compose up -d postgres
+cd backend
+alembic upgrade head   # optional — the app also runs this automatically on boot
+```
+
+**Seeding**: `python scripts/seed_postgres.py` (same invocation shape as `index_products.py` — run from inside the backend container, or via `docker compose exec backend python scripts/seed_postgres.py`). Sources:
+- `products`/`product_images`: same `McAuley-Lab/Amazon-Reviews-2023` dataset and category/product-count limits as `index_products.py`, re-read independently (not dependent on ES being populated first). Product filtering is kept in sync with `index_products.py` via a shared `_parse_amazon_product()`-style helper so `Product.id` values overlap 1:1 with the ES `_id` space.
+- `reviews`: real review text from the same dataset's `raw_review_categories/{Category}.jsonl` files, joined to seeded products via `parent_asin`.
+- `users`/`addresses`: **synthetic**, generated with Faker — no real user dataset exists in the source data (review `user_id` values are opaque anonymized hashes, not usable as real user records).
+
+Like `index_products.py`, this wipes and recreates the schema for a clean run each time — not incremental.
+
+**Sync note**: `products`/`product_images`/`reviews` in Postgres and the ES `products` index are currently two independently-seeded, non-synced copies of overlapping data (both scripts source from the same dataset but run independently, and can be run in either order). No CDC/sync exists between them (see `docs/cdc-reindex-pipeline.md`, tracked as issue #40 and explicitly deferred — no multi-writer/multi-consumer need justifies it today).
+
+Phase 2 (cart, orders, payments — see issue tracker) will add tables to this same Postgres database using the same `Base`/`get_session()` pattern in `db.py`.

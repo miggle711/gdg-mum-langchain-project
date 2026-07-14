@@ -26,3 +26,50 @@ class FeedbackRequest(BaseModel):
 
 class FeedbackResponse(BaseModel):
     message: str
+
+
+class CartItemResponse(BaseModel):
+    id: int
+    product_id: str
+    quantity: int
+
+
+class CartResponse(BaseModel):
+    user_id: int
+    items: list[CartItemResponse]
+    total: float
+
+
+class AddToCartRequest(BaseModel):
+    user_id: int
+    product_id: str
+    quantity: int = 1
+
+
+class UpdateCartItemRequest(BaseModel):
+    quantity: int
+
+
+class CheckoutRequest(BaseModel):
+    user_id: int
+    address_id: int
+
+
+class OrderItemResponse(BaseModel):
+    product_id: str
+    quantity: int
+    unit_price: float
+
+
+class OrderResponse(BaseModel):
+    id: int
+    user_id: int
+    address_id: int
+    status: str
+    items: list[OrderItemResponse]
+    payment_status: str
+
+
+class CheckoutResponse(BaseModel):
+    order: OrderResponse
+    message: str

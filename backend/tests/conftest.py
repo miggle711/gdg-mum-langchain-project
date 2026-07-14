@@ -49,3 +49,16 @@ def mock_conversations_redis(mocker):
     r = mocker.MagicMock()
     mocker.patch("conversations._get_redis", return_value=r)
     return r
+
+
+@pytest.fixture
+def mock_db_session(mocker):
+    """A mocked SQLAlchemy AsyncSession, patched into db.get_session().
+    Use mocker.AsyncMock(), not MagicMock() — db.py's session is async, so
+    methods like session.commit()/session.execute() get awaited by callers.
+    A MagicMock's return value isn't awaitable, so `await mock.commit()`
+    raises TypeError: object MagicMock can't be used in 'await' expression.
+    """
+    session = mocker.AsyncMock()
+    mocker.patch("db.get_session", return_value=session)
+    return session

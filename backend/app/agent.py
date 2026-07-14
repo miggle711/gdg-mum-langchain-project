@@ -4,7 +4,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langfuse import get_client
+from langfuse import Langfuse, get_client
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -109,4 +109,11 @@ class AgentExecutorAdapter:
 
 
 agent_executor = AgentExecutorAdapter()
+
+Langfuse(
+    public_key=settings.langfuse_public_key,
+    secret_key=settings.langfuse_secret_key,
+    base_url=settings.langfuse_base_url,
+)
+
 langfuse_client = get_client()
