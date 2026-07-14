@@ -65,7 +65,7 @@ Defined in `backend/models_db.py` (SQLAlchemy ORM), migrated via Alembic (`backe
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `id` | `String` (PK) | `parent_asin` from the source dataset — matches the ES document `_id` |
+| `id` | `String` (PK) | `parent_asin` from the source dataset — matches the ES document `_id`. Products created via `POST /products` (#49) instead get a `uuid.uuid4().hex` id — the two id shapes (short alphanumeric ASINs vs. 32-char hex UUIDs) coexist in this column with no collision risk. |
 | `name` | `Text` | |
 | `description` | `Text`, nullable | |
 | `category` | `String`, indexed | Plain column, not a separate entity — same reasoning as the ES `category` field (see below) |
