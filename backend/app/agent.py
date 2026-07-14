@@ -1,7 +1,8 @@
 import os
 import sys
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langfuse import Langfuse, get_client
 
@@ -28,29 +29,86 @@ Response guidelines:
 - When describing products, include price, rating, and number of reviews
 - If you don't know something about our specific products or policies, suggest they contact support"""
 
-# Shared singletons — created once at startup and reused across all conversations.
-# The LLM client, prompt, and AgentExecutor are stateless between calls;
-# per-conversation state lives entirely in the chat_history we pass in each invocation.
+MAX_TOOL_ITERATIONS = 5
+
 _llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=settings.google_api_key,
     temperature=0.7,
 )
+_tool_enabled_llm = _llm.bind_tools(PRODUCT_TOOLS)
+_tool_map = {tool.name: tool for tool in PRODUCT_TOOLS}
 
-_prompt = ChatPromptTemplate.from_messages([
-    ("system", ECOMMERCE_SYSTEM_PROMPT),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
 
-agent_executor = AgentExecutor(
-    agent=create_tool_calling_agent(_llm, PRODUCT_TOOLS, _prompt),
-    tools=PRODUCT_TOOLS,
-    verbose=True,
-    handle_parsing_errors=True,
-    max_iterations=5,
-)
+def _build_messages(payload: dict[str, Any]) -> list[BaseMessage]:
+    messages: list[BaseMessage] = [SystemMessage(content=ECOMMERCE_SYSTEM_PROMPT)]
+    messages.extend(payload.get("chat_history", []))
+
+    user_input = payload.get("input", "")
+    if user_input:
+        messages.append(HumanMessage(content=user_input))
+
+    return messages
+
+
+def _message_text(message: AIMessage) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(content or "")
+
+
+def _run_product_agent(payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, str]:
+    messages = _build_messages(payload)
+    last_ai_message: AIMessage | None = None
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        ai_message = _tool_enabled_llm.invoke(messages, config=config)
+        last_ai_message = ai_message
+        messages.append(ai_message)
+
+        if not ai_message.tool_calls:
+            return {"output": _message_text(ai_message)}
+
+        for tool_call in ai_message.tool_calls:
+            tool_name = tool_call["name"]
+            tool = _tool_map.get(tool_name)
+
+            if tool is None:
+                tool_result = f"Tool '{tool_name}' is not available."
+            else:
+                tool_result = tool.invoke(tool_call.get("args", {}), config=config)
+
+            messages.append(
+                ToolMessage(
+                    content=str(tool_result),
+                    tool_call_id=tool_call["id"],
+                    name=tool_name,
+                )
+            )
+
+    return {"output": _message_text(last_ai_message) if last_ai_message else ""}
+
+
+class AgentExecutorAdapter:
+    def invoke(self, payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, str]:
+        return _run_product_agent(payload, config=config)
+
+    async def astream(self, payload: dict[str, Any], config: dict[str, Any] | None = None):
+        result = _run_product_agent(payload, config=config)
+        if result["output"]:
+            yield {"output": result["output"]}
+
+
+agent_executor = AgentExecutorAdapter()
 
 Langfuse(
     public_key=settings.langfuse_public_key,

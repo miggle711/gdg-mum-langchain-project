@@ -1,10 +1,9 @@
-from langchain.tools import StructuredTool
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from search import query_products, get_categories, semantic_search
 import search
 from typing import Optional
 import json
-
 
 class QueryProductsInput(BaseModel):
     search: Optional[str] = Field(None, description="Keyword to search in product names")

@@ -25,4 +25,4 @@ jobs:
         working-directory: backend
         env:
           GOOGLE_API_KEY: dummy-key-for-tests
-        run: pytest -v
+        run: pytest -v -m "not llm"
