@@ -4,6 +4,14 @@ import os
 import pytest
 from langchain_core.messages import HumanMessage
 
+# Placeholder-string matching (e.g. checking for "test-key") is brittle —
+# CI uses a different placeholder ("dummy-key-for-tests") than local dev's
+# conftest.py default ("test-key"), and neither actually looks like a real
+# key. Real Google API keys start with "AIza"; anything else is a stand-in.
+# The primary guard is still `pytest -m "not llm"` in CI — this is a
+# secondary safety net for anyone running the full suite locally without
+# that flag but without a real key either.
+_HAS_REAL_GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").startswith("AIza")
 
 LIVE_LLM_INTENT_CASES = [
     ("Do you have any running shoes under $80?", "product_details"),
@@ -106,29 +114,23 @@ def test_product_node_falls_back_when_agent_returns_no_output(mocker):
 # Tests live LLM classification (requires a real GOOGLE_API_KEY)
 @pytest.mark.llm
 @pytest.mark.skipif(
-    os.getenv("GOOGLE_API_KEY") in (None, "", "test-key"),
+    not _HAS_REAL_GOOGLE_API_KEY,
     reason="A real GOOGLE_API_KEY is required.",
 )
 @pytest.mark.parametrize(("prompt", "expected_intent"), LIVE_LLM_INTENT_CASES)
 def test_classify_intent_with_live_llm(prompt, expected_intent):
     import app.graph as graph
 
-    if os.getenv("GOOGLE_API_KEY") in (None, "", "test-key"):
-        pytest.skip("A real GOOGLE_API_KEY is required for live LLM classification tests.")
-
     assert graph.classify_intent({"input": prompt})["intent"] == expected_intent
 
 # Tests live LLM classification with chat history (requires a real GOOGLE_API_KEY)
 @pytest.mark.llm
 @pytest.mark.skipif(
-    os.getenv("GOOGLE_API_KEY") in (None, "", "test-key"),
+    not _HAS_REAL_GOOGLE_API_KEY,
     reason="A real GOOGLE_API_KEY is required.",
 )
 def test_classify_intent_with_live_llm_uses_chat_history():
     import app.graph as graph
-
-    if os.getenv("GOOGLE_API_KEY") in (None, "", "test-key"):
-        pytest.skip("A real GOOGLE_API_KEY is required for live LLM classification tests.")
 
     state = {
         "input": "What about one in blue?",
