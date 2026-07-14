@@ -120,8 +120,7 @@ sequenceDiagram
 
 ### Prerequisites
 - Docker Desktop
-- `.env` file in project root with `GOOGLE_API_KEY` set (see [.env.example](.env.example))
-- A `backend/.env` for backend-specific overrides — see [backend/.env.example](backend/.env.example) (Redis/ES URLs, cache/conversation TTLs, Langfuse keys)
+- A `backend/.env` with `GOOGLE_API_KEY` set — see [backend/.env.example](backend/.env.example) for the full list (Redis/ES/DB URLs, Langfuse keys). This is the only `.env` file the app reads (`backend/app/config.py`); `docker compose up` itself doesn't consume it directly (compose passes config via `docker-compose.yml`'s `environment:` blocks), but scripts and any non-Docker local run do.
 
 ### Run Locally
 
