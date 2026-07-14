@@ -1,4 +1,14 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+# pydantic-settings resolves a relative env_file against the process's
+# current working directory, not this file's location — so "backend/.env"
+# would silently load a different (or missing) file depending on whether
+# the app is launched from the repo root or from backend/. Anchoring to
+# __file__ makes the resolved path independent of invocation directory.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_ENV_FILE = _BACKEND_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -15,7 +25,7 @@ class Settings(BaseSettings):
     langfuse_base_url: str = "https://cloud.langfuse.com"
 
     class Config:
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
         extra = "ignore"
 
 

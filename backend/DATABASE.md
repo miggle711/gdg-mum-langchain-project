@@ -122,4 +122,10 @@ Like `index_products.py`, this wipes and recreates the schema for a clean run ea
 
 **Sync note**: `products`/`product_images`/`reviews` in Postgres and the ES `products` index are currently two independently-seeded, non-synced copies of overlapping data (both scripts source from the same dataset but run independently, and can be run in either order). No CDC/sync exists between them (see `docs/cdc-reindex-pipeline.md`, tracked as issue #40 and explicitly deferred — no multi-writer/multi-consumer need justifies it today).
 
+As of #49, this applies only to the two seed scripts' initial data. Writes made **through the product API routes** (`app/routes/products.py`) stay in sync: each route writes Postgres first, then performs the equivalent single-document ES write (`es_upsert_document`/`es_delete_document`), regenerating the BGE embedding on every create/update. This is lightweight and non-transactional — if the ES write fails after a successful Postgres commit, the request still returns success and the product is left stale in ES with no retry queue. See #40 (deferred) for the CDC-based alternative that would close this gap.
+
 Phase 2 (cart, orders, payments — see issue tracker) will add tables to this same Postgres database using the same `Base`/`get_session()` pattern in `db.py`.
+
+### Product write API (#49)
+
+`POST /products`, `PATCH /products/{id}`, and `DELETE /products/{id}` (`app/routes/products.py`) are the only write path into `products` outside the seed scripts. Create generates a new `id` via `uuid.uuid4().hex` (distinct in shape from the seed dataset's `parent_asin` ids — see `docs/db-models.md`). Update is a partial update (`exclude_unset=True` semantics — an explicit `null` clears a field, an omitted field is left untouched) and unconditionally regenerates the product's embedding on every call, since `content_hash`-based change detection isn't wired up yet. Delete cascades to `product_images`/`reviews` in Postgres (FK `ondelete="CASCADE"`) but is blocked (`IntegrityError` → `500`) if the product has order history, via `order_items.product_id`'s `ondelete="RESTRICT"`.

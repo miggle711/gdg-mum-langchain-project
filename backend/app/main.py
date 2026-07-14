@@ -20,14 +20,16 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.limiter import limiter
-from search import init_es_index
+from search import init_es_index, seed_products_if_empty
 from cache import init_cache_index
 from db import run_migrations
 from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
 from app.routes.cart import router as cart_router
+from app.routes.products import router as products_router
 
 init_es_index()
+seed_products_if_empty()
 init_cache_index()
 run_migrations()
 
@@ -68,6 +70,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(chat_router)
 app.include_router(health_router)
 app.include_router(cart_router)
+app.include_router(products_router)
 
 Instrumentator().instrument(app).expose(app)
 

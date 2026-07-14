@@ -1,20 +1,9 @@
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
-from search import query_products, get_categories, semantic_search, EMBEDDING_MODEL
+from search import query_products, get_categories, semantic_search
+import search
 from typing import Optional
 import json
-
-_embedding_model = None
-
-
-def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        from sentence_transformers import SentenceTransformer
-
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-    return _embedding_model
-
 
 class QueryProductsInput(BaseModel):
     search: Optional[str] = Field(None, description="Keyword to search in product names")
@@ -75,7 +64,7 @@ def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
     try:
         # BGE models perform better with this instruction prefix for retrieval queries
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
-        embedding = get_embedding_model().encode(prefixed_query, normalize_embeddings=True).tolist()
+        embedding = search.get_embedding_model().encode(prefixed_query, normalize_embeddings=True).tolist()
         results = semantic_search(query, embedding, limit=limit or 5)
 
         if not results:

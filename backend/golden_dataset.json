@@ -1,0 +1,183 @@
+[
+  {
+    "id": "golden_001",
+    "type": "exact_filter",
+    "input": "electronics under $20",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Electronics", "price_max": 20 },
+    "anchor_products": ["Yoga Frog Sticker", "T POWER Ac dc Adapter for DigiTech JML2 JamMan Stereo Looper Sampler Pedal", "MightySkins Skin Compatible with Wyze Cam V2"],
+    "reference_answer": "Should return Electronics products priced at or below $20, sorted by rating then reviews (e.g. the Yoga Frog Sticker at $3.19 with 34 reviews should rank near the top)."
+  },
+  {
+    "id": "golden_002",
+    "type": "exact_filter",
+    "input": "electronics between $50 and $100",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Electronics", "price_min": 50, "price_max": 100 },
+    "anchor_products": ["JLab Epic Talk USB Microphone", "Power Supply VMRD2 For DELL OPTIPLEX", "HP G72-C55DX Laptop Screen 17.3\" LED"],
+    "reference_answer": "Should return Electronics products priced between $50 and $100, such as the JLab USB microphone ($99.00) and the Dell power supply ($59.99)."
+  },
+  {
+    "id": "golden_003",
+    "type": "exact_filter",
+    "input": "highly rated electronics, at least 4.5 stars",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Electronics", "rating_min": 4.5 },
+    "anchor_products": ["Yoga Frog Sticker", "JLab Epic Talk USB Microphone"],
+    "reference_answer": "Should return Electronics products rated 4.5 or above."
+  },
+  {
+    "id": "golden_004",
+    "type": "exact_filter",
+    "input": "home and kitchen items under $15",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Home & Kitchen", "price_max": 15 },
+    "anchor_products": ["Wallors Novelty Outdoor Art Decorations Wall Decor Tin Signs", "SignJoker Dragon Crossing Sign", "Stainless Steel Sugar Spoon"],
+    "reference_answer": "Should return Home & Kitchen products priced at or below $15, e.g. the tin sign ($12.38) and the dragon crossing sign ($9.95)."
+  },
+  {
+    "id": "golden_005",
+    "type": "exact_filter",
+    "input": "home and kitchen products over $30",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Home & Kitchen", "price_min": 30 },
+    "anchor_products": ["Custom Birthday Party Invitations - Vampirina", "FESS Products Wooden Storage Box", "SEI Furniture Olivern End Table"],
+    "reference_answer": "Should return Home & Kitchen products priced above $30, e.g. the wooden storage box ($34.95) and the SEI end table ($144.02)."
+  },
+  {
+    "id": "golden_006",
+    "type": "exact_filter",
+    "input": "sports and outdoors gear under $15",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Sports & Outdoors", "price_max": 15 },
+    "anchor_products": ["Daddy's Fishing Buddy Triangle Fisherman Dog Bandana", "Bluegrass Decals Pit Bull Pit Mom Sticker", "Simhoa Waterproof Golf Blade Putter Headcover"],
+    "reference_answer": "Should return Sports & Outdoors items priced at or below $15, e.g. the dog bandana ($12.99) and the golf headcover ($12.99)."
+  },
+  {
+    "id": "golden_007",
+    "type": "exact_filter",
+    "input": "sports and outdoors products above $50 with at least a 4.5 rating",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Sports & Outdoors", "rating_min": 4.5, "price_min": 50 },
+    "anchor_products": ["Woof Wear Color Fusion Dressage Pad", "Knotty Girlz Horse Rope Hackamore Set", "Avon Chamois Standard Black Golf Grip Kit"],
+    "reference_answer": "Should return Sports & Outdoors items priced above $50 and rated 4.5+, e.g. the dressage pad ($89.95) and the hackamore set ($69.95)."
+  },
+  {
+    "id": "golden_008",
+    "type": "exact_filter",
+    "input": "toys and games under $10",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Toys & Games", "price_max": 10 },
+    "anchor_products": ["LEGO Parts and Pieces: Black 2x4 Brick x20", "8-Count Paper Party Cups", "Magic The Gathering - Xathrid Demon"],
+    "reference_answer": "Should return Toys & Games items priced at or below $10, e.g. the LEGO bricks ($8.99) and the Magic card ($4.99)."
+  },
+  {
+    "id": "golden_009",
+    "type": "exact_filter",
+    "input": "toys and games priced above $50",
+    "expected_tool": "query_products",
+    "expected_filters": { "category": "Toys & Games", "price_min": 50 },
+    "anchor_products": ["Low Vision Very Big Numbers Playing Cards Bundle", "440lbs Swing Sets for Backyard", "GUND Slumbers Teddy Bear Stuffed Animal Plush"],
+    "reference_answer": "Should return Toys & Games items priced above $50, e.g. the swing set ($189.99) and the GUND teddy bear ($74.95)."
+  },
+  {
+    "id": "golden_010",
+    "type": "exact_filter_keyword",
+    "input": "search for JBL products",
+    "expected_tool": "query_products",
+    "expected_filters": { "search": "JBL" },
+    "anchor_products": ["JBL CLIP 3 - Waterproof Portable Bluetooth Speaker", "JBL FLIP 5 - Waterproof Portable Bluetooth Speaker", "Seismic Audio SA-DR2-8 Ohm JBL Compatible Replacement Diaphragm"],
+    "reference_answer": "Should return the 5 JBL-related products, led by the two waterproof speakers (Clip 3 at $43.97/4.7 rating/1646 reviews, Flip 5 at $79.90/4.7 rating/762 reviews)."
+  },
+  {
+    "id": "golden_011",
+    "type": "exact_filter_keyword",
+    "input": "camera equipment",
+    "expected_tool": "query_products",
+    "expected_filters": { "search": "camera" },
+    "anchor_products": ["Sigma 150-600mm f/5-6.3 DG DN OS Sports Lens", "ANNKE 4K 16CH Security DVR Recorder"],
+    "reference_answer": "Should return camera-related products, e.g. the Sigma lens ($1499.00) and the ANNKE security DVR system ($909.99)."
+  },
+  {
+    "id": "golden_012",
+    "type": "exact_filter_keyword",
+    "input": "backyard equipment for kids",
+    "expected_tool": "query_products",
+    "expected_filters": { "search": "backyard" },
+    "anchor_products": ["440lbs Swing Sets for Backyard", "B. toys Wavy-Wagon Travel Beach Buggy"],
+    "reference_answer": "Should return backyard-related products, e.g. the swing set ($189.99) and the beach buggy toy ($18.95, 1028 reviews)."
+  },
+  {
+    "id": "golden_013",
+    "type": "semantic",
+    "input": "gift for a musician who does home recording",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["JLab Epic Talk USB Microphone"],
+    "reference_answer": "Should surface the JLab USB microphone as a relevant recording-related gift."
+  },
+  {
+    "id": "golden_014",
+    "type": "semantic",
+    "input": "birthday party decorations for a 30th birthday",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["CSFOTO 8x8ft Happy 30th Birthday Backdrop"],
+    "reference_answer": "Should surface the 30th birthday photo backdrop as a directly relevant match."
+  },
+  {
+    "id": "golden_015",
+    "type": "semantic",
+    "input": "something to keep my jewelry and keepsakes organized",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["FESS Products Wooden Storage Box"],
+    "reference_answer": "Should surface the wooden storage box, which is explicitly marketed for jewelry and keepsakes."
+  },
+  {
+    "id": "golden_016",
+    "type": "semantic",
+    "input": "gift for someone who loves horseback riding",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["Woof Wear Color Fusion Dressage Pad", "Knotty Girlz Horse Rope Hackamore Set"],
+    "reference_answer": "Should surface horseback-riding-related gear, such as the dressage pad or the hackamore rope set."
+  },
+  {
+    "id": "golden_017",
+    "type": "semantic",
+    "input": "waterproof speaker for the beach",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["JBL CLIP 3 - Waterproof Portable Bluetooth Speaker", "JBL FLIP 5 - Waterproof Portable Bluetooth Speaker"],
+    "reference_answer": "Should surface one or both JBL waterproof speakers as relevant for beach use."
+  },
+  {
+    "id": "golden_018",
+    "type": "semantic",
+    "input": "outdoor security camera system for my house",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["ANNKE 4K 16CH Security DVR Recorder"],
+    "reference_answer": "Should surface the ANNKE security DVR/camera system as a strong semantic match."
+  },
+  {
+    "id": "golden_019",
+    "type": "semantic",
+    "input": "backyard play equipment for kids",
+    "expected_tool": "semantic_search",
+    "anchor_products": ["440lbs Swing Sets for Backyard", "B. toys Wavy-Wagon Travel Beach Buggy"],
+    "reference_answer": "Should surface the swing set and/or the beach buggy toy as relevant backyard/outdoor play items for children."
+  },
+  {
+    "id": "golden_020",
+    "type": "semantic_no_match",
+    "input": "is there a plushie?",
+    "expected_tool": "semantic_search",
+    "anchor_products": [],
+    "reference_answer": "Confirmed empty in a real production trace: no plush toy products were surfaced for this exact query. The assistant should politely state no matching products were found, without inventing an unrelated substitute."
+  },
+  {
+    "id": "golden_021",
+    "type": "exact_filter_no_match",
+    "input": "search for a flibberjib wombat gadget",
+    "expected_tool": "query_products",
+    "expected_filters": { "search": "flibberjib wombat gadget" },
+    "anchor_products": [],
+    "reference_answer": "Confirmed zero results against the live index for this exact keyword string. The assistant should state no matching products were found rather than substituting an unrelated product. Note: this input is a deliberately nonsensical phrase chosen to guarantee a stable zero-match test case, not a naturalistic customer query — if a more realistic-sounding no-match example is preferred, it would need to be tested against the live index first to confirm it actually returns zero results before use."
+  }
+]

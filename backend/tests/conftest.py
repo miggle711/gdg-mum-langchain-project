@@ -25,6 +25,14 @@ def mock_reranker(mocker):
 
 
 @pytest.fixture
+def mock_embedding_model(mocker):
+    """A mocked SentenceTransformer, patched into search.get_embedding_model()."""
+    model = mocker.MagicMock()
+    mocker.patch("search.get_embedding_model", return_value=model)
+    return model
+
+
+@pytest.fixture
 def mock_redis_binary(mocker):
     """A mocked binary Redis client, patched into cache._get_redis_binary()."""
     r = mocker.MagicMock()
