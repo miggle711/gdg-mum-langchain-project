@@ -1,0 +1,85 @@
+name: Products API (#49)
+description: Create/update/delete routes for the product write-path + Postgres→ES sync.
+variable:
+  - key: productId
+    value: ""
+item:
+  - name: Create product
+    request:
+      method: POST
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "name": "Test Widget",
+            "description": "A widget created via Postman for manual verification",
+            "category": "Electronics",
+            "price": 19.99,
+            "original_price": 24.99,
+            "rating": 4.5,
+            "reviews": 0,
+            "image": "https://example.com/widget.jpg"
+          }
+      url:
+        raw: "{{baseUrl}}/products"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - products
+    event:
+      - listen: test
+        script:
+          exec:
+            - if (pm.response.code === 201) {
+            - "    const body = pm.response.json();"
+            - "    pm.collectionVariables.set('productId', body.id);"
+            - "    pm.globals.set('productId', body.id);"
+            - "}"
+
+  - name: Get product from Elasticsearch
+    request:
+      method: GET
+      url:
+        raw: "http://localhost:9200/products/_doc/{{productId}}"
+        protocol: http
+        host:
+          - localhost
+        port: "9200"
+        path:
+          - products
+          - _doc
+          - "{{productId}}"
+
+  - name: Update product (partial)
+    request:
+      method: PATCH
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "price": 29.99
+          }
+      url:
+        raw: "{{baseUrl}}/products/{{productId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - products
+          - "{{productId}}"
+
+  - name: Delete product
+    request:
+      method: DELETE
+      url:
+        raw: "{{baseUrl}}/products/{{productId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - products
+          - "{{productId}}"

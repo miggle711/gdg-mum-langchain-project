@@ -1,0 +1,23 @@
+name: Globals
+values:
+  - key: baseUrl
+    value: http://localhost:8000
+    type: default
+  - key: productId
+    value: ""
+    type: default
+  - key: userId
+    value: "1"
+    type: default
+  - key: addressId
+    value: "1"
+    type: default
+  - key: cartItemId
+    value: ""
+    type: default
+  - key: conversationId
+    value: ""
+    type: default
+  - key: traceId
+    value: ""
+    type: default

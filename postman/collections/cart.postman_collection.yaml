@@ -1,0 +1,109 @@
+name: Cart & Checkout API
+description: Cart, checkout, and order-history routes.
+item:
+  - name: Get cart
+    request:
+      method: GET
+      url:
+        raw: "{{baseUrl}}/cart/{{userId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - cart
+          - "{{userId}}"
+
+  - name: Add to cart
+    request:
+      method: POST
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "user_id": {{userId}},
+            "product_id": "{{productId}}",
+            "quantity": 1
+          }
+      url:
+        raw: "{{baseUrl}}/cart/add"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - cart
+          - add
+    event:
+      - listen: test
+        script:
+          exec:
+            - if (pm.response.code === 200) {
+            - "    const body = pm.response.json();"
+            - "    if (body.items && body.items.length > 0) {"
+            - "        pm.globals.set('cartItemId', body.items[0].id);"
+            - "    }"
+            - "}"
+
+  - name: Update cart item quantity
+    request:
+      method: PATCH
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "quantity": 2
+          }
+      url:
+        raw: "{{baseUrl}}/cart/item/{{cartItemId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - cart
+          - item
+          - "{{cartItemId}}"
+
+  - name: Remove cart item
+    request:
+      method: DELETE
+      url:
+        raw: "{{baseUrl}}/cart/item/{{cartItemId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - cart
+          - item
+          - "{{cartItemId}}"
+
+  - name: Checkout
+    request:
+      method: POST
+      header:
+        - key: Content-Type
+          value: application/json
+      body:
+        mode: raw
+        raw: |-
+          {
+            "user_id": {{userId}},
+            "address_id": {{addressId}}
+          }
+      url:
+        raw: "{{baseUrl}}/checkout"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - checkout
+
+  - name: List orders
+    request:
+      method: GET
+      url:
+        raw: "{{baseUrl}}/orders/{{userId}}"
+        host:
+          - "{{baseUrl}}"
+        path:
+          - orders
+          - "{{userId}}"
