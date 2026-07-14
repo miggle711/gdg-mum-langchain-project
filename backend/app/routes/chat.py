@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import HumanMessage, SystemMessage
-from langfuse import propagate_attributes
+# from langfuse import propagate_attributes
 from langfuse.langchain import CallbackHandler
 import sys
 import os
@@ -50,12 +50,37 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 
         trace_id = langfuse_client.create_trace_id()
         handler = CallbackHandler(trace_context={"trace_id": trace_id})
-        result = chat_graph.invoke(
-            {"input": body.message, "chat_history": chat_history},
-            config={"callbacks": [handler]},
-        )
 
-        response_text = result["response"]
+        with langfuse_client.start_as_current_span(
+            name="http.chat",
+            trace_context={"trace_id": trace_id},
+            input={
+                "conversation_id": body.conversation_id,
+                "message": body.message,
+                "chat_history_length": len(chat_history),
+            },
+            metadata={"route": "/chat"},
+        ) as span:
+            langfuse_client.update_current_trace(
+                name="ecommerce-chat",
+                session_id=body.conversation_id,
+                input={"message": body.message},
+                metadata={"route": "/chat"},
+            )
+
+            result = chat_graph.invoke(
+                {"input": body.message, "chat_history": chat_history},
+                config={"callbacks": [handler]},
+            )
+
+            response_text = result["response"]
+
+            span.update(
+                output={
+                    "intent": result.get("intent"),
+                    "response": response_text,
+                }
+            )
 
         history.add_user_message(body.message)
         history.add_ai_message(response_text)
@@ -94,29 +119,41 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
     async def generate():
         full_response = ""
         yield f"data: {json.dumps({'trace_id': trace_id})}\n\n"
+
         try:
-            with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat-stream"):
+            with langfuse_client.start_as_current_span(
+                name="http.chat_stream",
+                trace_context={"trace_id": trace_id},
+                input={
+                    "conversation_id": body.conversation_id,
+                    "message": body.message,
+                    "chat_history_length": len(chat_history),
+                },
+                metadata={"route": "/chat/stream"},
+            ) as span:
+                langfuse_client.update_current_trace(
+                    name="ecommerce-chat-stream",
+                    session_id=body.conversation_id,
+                    input={"message": body.message},
+                    metadata={"route": "/chat/stream"},
+                )
+
                 result = chat_graph.invoke(
                     {"input": body.message, "chat_history": chat_history},
                     config={"callbacks": [stream_handler]},
                 )
                 response_text = result["response"]
                 full_response = response_text
+
+                span.update(
+                    output={
+                        "intent": result.get("intent"),
+                        "response": response_text,
+                    }
+                )
+
                 yield f"data: {json.dumps({'text': response_text})}\n\n"
                 await asyncio.sleep(0)
-            # TODO: Miguel, can you explain what does chat_stream does?
-            # TODO: Do i need to use the async generator to stream the response back to the client?
-
-            # with propagate_attributes(session_id=body.conversation_id, trace_name="ecommerce-chat-stream"):
-            #     async for chunk in agent_executor.astream(
-            #         {"input": body.message, "chat_history": chat_history},
-            #         config={"callbacks": [stream_handler]},
-            #     ):
-            #         if "output" in chunk:
-            #             token = chunk["output"]
-            #             full_response += token
-            #             yield f"data: {json.dumps({'text': token})}\n\n"
-            #             await asyncio.sleep(0)  # yield control back to the event loop
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return

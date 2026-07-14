@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
+from langfuse import get_client
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -72,24 +73,43 @@ _intent_llm = ChatGoogleGenerativeAI(
 
 _intent_classifier = _INTENT_CLASSIFIER_PROMPT | _intent_llm.with_structured_output(IntentClassification)
 
+langfuse_client = get_client()
+
+def _start_graph_span(name: str, state: GraphState):
+    return langfuse_client.start_as_current_span(
+        name=name,
+        input={
+            "input": state.get("input", ""),
+            "chat_history_length": len(state.get("chat_history", [])),
+        },
+        metadata={"component": "langgraph"},
+    )
 
 def classify_intent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
-    try:
-        result = _intent_classifier.invoke(
-            {
-                "input": state.get("input", ""),
-                "chat_history": state.get("chat_history", []),
-            },
-            config=config,
-        )
-    except Exception:
-        logger.exception("Intent classification failed; falling back to clarify")
-        return {"intent": "clarify"}
+    with _start_graph_span("graph.classify_intent", state) as span:
+        try:
+            result = _intent_classifier.invoke(
+                {
+                    "input": state.get("input", ""),
+                    "chat_history": state.get("chat_history", []),
+                },
+                config=config,
+            )
+        except Exception as exc:
+            span.update(
+                level="ERROR",
+                status_message=str(exc),
+                output={"intent": "clarify"},
+            )
+            logger.exception("Intent classification failed; falling back to clarify")
+            return {"intent": "clarify"}
 
-    intent = getattr(result, "intent", "clarify")
-    if intent not in ALLOWED_INTENTS:
-        return {"intent": "clarify"}
-    return {"intent": intent}
+        intent = getattr(result, "intent", "clarify")
+        if intent not in ALLOWED_INTENTS:
+            intent = "clarify"
+
+        span.update(output={"intent": intent})
+        return {"intent": intent}
 
 
 def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
@@ -104,35 +124,55 @@ def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = Non
 
 
 def product_node(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
-    result = _invoke_product_agent(state, config=config)
-    response = result.get("output")
-    if response:
+    with _start_graph_span("graph.product_node", state) as span:
+        result = _invoke_product_agent(state, config=config)
+        response = result.get("output") or "I apologize, but I'm having trouble generating a response at the moment."
+        span.update(output={"response": response})
         return {"response": response}
-    return {"response": "I apologize, but I'm having trouble generating a response at the moment."}
 
 
 def small_talk_node(state: GraphState) -> Dict[str, Any]:
-    return {"response": "small talk node placeholder"}
+    with _start_graph_span("graph.small_talk_node", state) as span:
+        response = "response from graph - small talk node placeholder"
+        span.update(output={"response": response})
+        return {"response": response}
 
 
 def sensitive_node(state: GraphState) -> Dict[str, Any]:
-    return {"response": "sensitive topic node placeholder"}
+    with _start_graph_span("graph.sensitive_node", state) as span:
+        response = "response from graph - sensitive topic node placeholder"
+        span.update(output={"response": response})
+        return {"response": response}
 
 
 def clarify_node(state: GraphState) -> Dict[str, Any]:
-    return {"response": "I’m not sure which path fits best. Are you asking about a product, general conversation, or something sensitive?"}
+    with _start_graph_span("graph.clarify_node", state) as span:
+        response = "response from graph - clarify node placeholder"
+        span.update(output={"response": response})
+        return {"response": response}
 
 
 def route_from_intent(state: GraphState) -> str:
     intent = state.get("intent", "clarify")
 
     if intent == "product_details":
-        return "product_node"
-    if intent == "small_talk":
-        return "small_talk_node"
-    if intent == "sensitive_topic":
-        return "sensitive_node"
-    return "clarify_node"
+        route = "product_node"
+    elif intent == "small_talk":
+        route = "small_talk_node"
+    elif intent == "sensitive_topic":
+        route = "sensitive_node"
+    else:
+        route = "clarify_node"
+
+    with langfuse_client.start_as_current_span(
+        name="graph.route_from_intent",
+        input={"intent": intent},
+        output={"route": route},
+        metadata={"component": "langgraph"},
+    ):
+        pass
+
+    return route
 
 
 def build_chat_graph():
