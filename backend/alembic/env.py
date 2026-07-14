@@ -81,8 +81,35 @@ async def run_async_migrations() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode, bridging Alembic's sync-only
     migration context to our async engine (db.py uses AsyncEngine/AsyncSession
-    throughout — see #41 for why the Postgres layer is async)."""
-    asyncio.run(run_async_migrations())
+    throughout — see #41 for why the Postgres layer is async).
+
+    asyncio.run() raises RuntimeError if called from inside an already-running
+    event loop. This happens under `uvicorn app.main:app` (the actual CLI
+    invocation used in Dockerfile/docker-compose) — uvicorn's app-loading path
+    has a loop active by the time this module executes, unlike a bare
+    `python3 -c "import app.main"`. Detect that case and run the coroutine on
+    a fresh event loop in a separate thread instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(run_async_migrations())
+    else:
+        import threading
+
+        exception_holder = []
+
+        def _run_in_thread():
+            try:
+                asyncio.run(run_async_migrations())
+            except Exception as e:
+                exception_holder.append(e)
+
+        thread = threading.Thread(target=_run_in_thread)
+        thread.start()
+        thread.join()
+        if exception_holder:
+            raise exception_holder[0]
 
 
 if context.is_offline_mode():
