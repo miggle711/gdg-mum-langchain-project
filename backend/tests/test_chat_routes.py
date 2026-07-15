@@ -81,14 +81,14 @@ async def test_chat_route_uses_langgraph_and_preserves_response_shape(mocker, ch
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             "/chat",
-            json={"conversation_id": "conv-1", "message": "hello"},
+            json={"session_id": "conv-1", "message": "hello"},
         )
 
     # The public API shape should remain unchanged even though the backend now
     # delegates response generation to LangGraph.
     assert response.status_code == 200
     assert response.json() == {
-        "conversation_id": "conv-1",
+        "session_id": "conv-1",
         "response": "GRAPH_WIRED_SENTINEL",
         "message_count": 1,
         "trace_id": "trace-123",
@@ -147,7 +147,7 @@ async def test_chat_stream_route_uses_langgraph_and_preserves_sse_contract(mocke
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             "/chat/stream",
-            json={"conversation_id": "conv-2", "message": "show me shoes"},
+            json={"session_id": "conv-2", "message": "show me shoes"},
         )
 
     # Preserve the content type and SSE event order expected by the frontend:

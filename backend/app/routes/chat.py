@@ -25,8 +25,8 @@ from app.limiter import limiter
 router = APIRouter()
 
 
-def get_or_create_conversation(conversation_id: str) -> ConversationData:
-    messages = load_messages(conversation_id)
+def get_or_create_conversation(session_id: str) -> ConversationData:
+    messages = load_messages(session_id)
     history = InMemoryChatMessageHistory()
     history.add_messages(messages)
     return {
@@ -38,10 +38,10 @@ def get_or_create_conversation(conversation_id: str) -> ConversationData:
 @limiter.limit("20/minute")
 async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     try:
-        conversation = get_or_create_conversation(body.conversation_id)
+        conversation = get_or_create_conversation(body.session_id)
         history = conversation["history"]
 
-        summary, recent_messages = maybe_summarise(body.conversation_id, history.messages, _llm)
+        summary, recent_messages = maybe_summarise(body.session_id, history.messages, _llm)
 
         chat_history = []
         if summary:
@@ -55,7 +55,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             name="http.chat",
             trace_context={"trace_id": trace_id},
             input={
-                "conversation_id": body.conversation_id,
+                "session_id": body.session_id,
                 "message": body.message,
                 "chat_history_length": len(chat_history),
             },
@@ -63,7 +63,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         ) as span:
             langfuse_client.update_current_trace(
                 name="ecommerce-chat",
-                session_id=body.conversation_id,
+                session_id=body.session_id,
                 input={"message": body.message},
                 metadata={"route": "/chat"},
             )
@@ -84,10 +84,10 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 
         history.add_user_message(body.message)
         history.add_ai_message(response_text)
-        save_messages(body.conversation_id, history.messages)
+        save_messages(body.session_id, history.messages)
 
         return ChatResponse(
-            conversation_id=body.conversation_id,
+            session_id=body.session_id,
             response=response_text or "I apologize, but I'm having trouble generating a response at the moment.",
             message_count=len(history.messages) // 2,
             trace_id=trace_id,
@@ -100,10 +100,10 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 @router.post("/chat/stream")
 @limiter.limit("20/minute")
 async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
-    conversation = get_or_create_conversation(body.conversation_id)
+    conversation = get_or_create_conversation(body.session_id)
     history = conversation["history"]
 
-    summary, recent_messages = maybe_summarise(body.conversation_id, history.messages, _llm)
+    summary, recent_messages = maybe_summarise(body.session_id, history.messages, _llm)
 
     chat_history = []
     if summary:
@@ -125,7 +125,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
                 name="http.chat_stream",
                 trace_context={"trace_id": trace_id},
                 input={
-                    "conversation_id": body.conversation_id,
+                    "session_id": body.session_id,
                     "message": body.message,
                     "chat_history_length": len(chat_history),
                 },
@@ -133,7 +133,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
             ) as span:
                 langfuse_client.update_current_trace(
                     name="ecommerce-chat-stream",
-                    session_id=body.conversation_id,
+                    session_id=body.session_id,
                     input={"message": body.message},
                     metadata={"route": "/chat/stream"},
                 )
@@ -161,26 +161,26 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
             if full_response:
                 history.add_user_message(body.message)
                 history.add_ai_message(full_response)
-                save_messages(body.conversation_id, history.messages)
+                save_messages(body.session_id, history.messages)
 
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@router.post("/chat/start")
-def start_conversation() -> dict[str, str]:
-    conversation_id = str(uuid.uuid4())
-    get_or_create_conversation(conversation_id)
+@router.post("/session/start")
+def start_session() -> dict[str, str]:
+    session_id = str(uuid.uuid4())
+    get_or_create_conversation(session_id)
     return {
-        "conversation_id": conversation_id,
+        "session_id": session_id,
         "message": "Welcome to our store! How can I help you find the perfect product today?"
     }
 
 
-@router.get("/conversation/{conversation_id}")
-def get_conversation(conversation_id: str):
-    messages = load_messages(conversation_id)
+@router.get("/conversation/{session_id}")
+def get_conversation(session_id: str):
+    messages = load_messages(session_id)
     if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -190,16 +190,16 @@ def get_conversation(conversation_id: str):
         messages_out.append({"role": role, "content": msg.content})
 
     return {
-        "conversation_id": conversation_id,
+        "session_id": session_id,
         "history": messages_out,
         "message_count": len(messages) // 2,
     }
 
 
-@router.delete("/conversation/{conversation_id}")
-def delete_conversation(conversation_id: str):
+@router.delete("/conversation/{session_id}")
+def delete_conversation(session_id: str):
     r = _get_redis()
-    deleted = r.delete(f"conversation:{conversation_id}")
+    deleted = r.delete(f"conversation:{session_id}")
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"message": "Conversation deleted"}
@@ -212,7 +212,7 @@ def list_conversations():
     return {
         "conversations": [
             {
-                "conversation_id": key.split(":", 1)[1],
+                "session_id": key.split(":", 1)[1],
                 "message_count": len(load_messages(key.split(":", 1)[1])) // 2,
             }
             for key in keys

@@ -12,7 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from db import get_session
-from models_db import Cart, CartItem, Order, OrderItem, Payment, Product
+from models_db import Address, Cart, CartItem, Order, OrderItem, Payment, Product
+from session_identity import get_or_create_shadow_user
 from app.models import (
     AddToCartRequest,
     CartItemResponse,
@@ -37,7 +38,7 @@ async def _get_or_create_cart(session, user_id: int) -> Cart:
     return cart
 
 
-async def _load_cart_response(session, user_id: int) -> CartResponse:
+async def _load_cart_response(session, user_id: int, session_id: str) -> CartResponse:
     cart = await _get_or_create_cart(session, user_id)
     result = await session.execute(
         select(CartItem, Product.price)
@@ -47,14 +48,15 @@ async def _load_cart_response(session, user_id: int) -> CartResponse:
     rows = result.all()
     items = [CartItemResponse(id=ci.id, product_id=ci.product_id, quantity=ci.quantity) for ci, _ in rows]
     total = sum(price * ci.quantity for ci, price in rows)
-    return CartResponse(user_id=user_id, items=items, total=round(total, 2))
+    return CartResponse(session_id=session_id, items=items, total=round(total, 2))
 
 
-@router.get("/cart/{user_id}")
-async def get_cart(user_id: int) -> CartResponse:
+@router.get("/cart/{session_id}")
+async def get_cart(session_id: str) -> CartResponse:
     try:
         async with get_session() as session:
-            response = await _load_cart_response(session, user_id)
+            user = await get_or_create_shadow_user(session, session_id)
+            response = await _load_cart_response(session, user.id, session_id)
             await session.commit()
         return response
     except Exception as e:
@@ -70,7 +72,8 @@ async def add_to_cart(body: AddToCartRequest) -> CartResponse:
             if product is None:
                 raise HTTPException(status_code=404, detail="Product not found")
 
-            cart = await _get_or_create_cart(session, body.user_id)
+            user = await get_or_create_shadow_user(session, body.session_id)
+            cart = await _get_or_create_cart(session, user.id)
 
             result = await session.execute(
                 select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == body.product_id)
@@ -82,7 +85,7 @@ async def add_to_cart(body: AddToCartRequest) -> CartResponse:
                 session.add(CartItem(cart_id=cart.id, product_id=body.product_id, quantity=body.quantity))
             await session.commit()
 
-            response = await _load_cart_response(session, body.user_id)
+            response = await _load_cart_response(session, user.id, body.session_id)
             await session.commit()
         return response
     except HTTPException:
@@ -133,8 +136,21 @@ async def remove_cart_item(item_id: int) -> dict[str, str]:
 async def checkout(body: CheckoutRequest) -> CheckoutResponse:
     try:
         async with get_session() as session:
+            user = await get_or_create_shadow_user(session, body.session_id)
+
+            # No self-serve address management exists yet for session-only
+            # (shadow) users — checkout requires an address already owned
+            # by this session's user. This also closes a pre-existing gap
+            # where any client could pass any user_id+address_id pair with
+            # no ownership check at all.
+            address_result = await session.execute(
+                select(Address).where(Address.id == body.address_id, Address.user_id == user.id)
+            )
+            if address_result.scalar_one_or_none() is None:
+                raise HTTPException(status_code=400, detail="Address not found for this session")
+
             async with session.begin():
-                cart_result = await session.execute(select(Cart).where(Cart.user_id == body.user_id))
+                cart_result = await session.execute(select(Cart).where(Cart.user_id == user.id))
                 cart = cart_result.scalar_one_or_none()
                 if cart is None:
                     raise HTTPException(status_code=400, detail="Cart is empty")
@@ -148,7 +164,7 @@ async def checkout(body: CheckoutRequest) -> CheckoutResponse:
                 if not rows:
                     raise HTTPException(status_code=400, detail="Cart is empty")
 
-                order = Order(user_id=body.user_id, address_id=body.address_id, status="paid")
+                order = Order(user_id=user.id, address_id=body.address_id, status="paid")
                 session.add(order)
                 await session.flush()
 
@@ -187,7 +203,7 @@ async def checkout(body: CheckoutRequest) -> CheckoutResponse:
             response = CheckoutResponse(
                 order=OrderResponse(
                     id=fresh_order.id,
-                    user_id=fresh_order.user_id,
+                    session_id=body.session_id,
                     address_id=fresh_order.address_id,
                     status=fresh_order.status,
                     items=[
@@ -206,20 +222,22 @@ async def checkout(body: CheckoutRequest) -> CheckoutResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/orders/{user_id}")
-async def list_orders(user_id: int) -> list[OrderResponse]:
+@router.get("/orders/{session_id}")
+async def list_orders(session_id: str) -> list[OrderResponse]:
     try:
         async with get_session() as session:
+            user = await get_or_create_shadow_user(session, session_id)
+            await session.commit()
             result = await session.execute(
                 select(Order)
-                .where(Order.user_id == user_id)
+                .where(Order.user_id == user.id)
                 .options(selectinload(Order.items), selectinload(Order.payment))
             )
             orders = result.scalars().all()
             return [
                 OrderResponse(
                     id=o.id,
-                    user_id=o.user_id,
+                    session_id=session_id,
                     address_id=o.address_id,
                     status=o.status,
                     items=[

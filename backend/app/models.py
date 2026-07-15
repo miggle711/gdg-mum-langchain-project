@@ -4,12 +4,12 @@ from typing import TypedDict
 
 
 class ChatRequest(BaseModel):
-    conversation_id: str
+    session_id: str
     message: str
 
 
 class ChatResponse(BaseModel):
-    conversation_id: str
+    session_id: str
     response: str
     message_count: int
     trace_id: str | None = None
@@ -35,13 +35,13 @@ class CartItemResponse(BaseModel):
 
 
 class CartResponse(BaseModel):
-    user_id: int
+    session_id: str
     items: list[CartItemResponse]
     total: float
 
 
 class AddToCartRequest(BaseModel):
-    user_id: int
+    session_id: str
     product_id: str
     quantity: int = 1
 
@@ -51,7 +51,7 @@ class UpdateCartItemRequest(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    user_id: int
+    session_id: str
     address_id: int
 
 
@@ -63,7 +63,7 @@ class OrderItemResponse(BaseModel):
 
 class OrderResponse(BaseModel):
     id: int
-    user_id: int
+    session_id: str
     address_id: int
     status: str
     items: list[OrderItemResponse]
