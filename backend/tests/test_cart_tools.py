@@ -98,3 +98,89 @@ async def test_view_cart_impl_returns_empty_cart_for_new_session(session):
 
     assert result["items"] == []
     assert result["total"] == 0
+
+
+async def test_remove_from_cart_impl_removes_existing_item(session):
+    await _seed_product(session)
+    await cart_tools.add_to_cart_impl(product_id="p1", quantity=2, session_id="session-1")
+
+    result = json.loads(await cart_tools.remove_from_cart_impl(product_id="p1", session_id="session-1"))
+
+    assert "error" not in result
+    assert result["items"] == []
+    assert result["total"] == 0
+
+
+async def test_remove_from_cart_impl_returns_error_for_item_not_in_cart(session):
+    await _seed_product(session)
+
+    result = json.loads(await cart_tools.remove_from_cart_impl(product_id="p1", session_id="session-1"))
+
+    assert result["error"] == "Item not in cart"
+
+
+async def test_remove_from_cart_impl_only_removes_specified_product(session):
+    await _seed_product(session, product_id="p1", name="Widget")
+    await _seed_product(session, product_id="p2", name="Gadget")
+    await cart_tools.add_to_cart_impl(product_id="p1", quantity=1, session_id="session-1")
+    await cart_tools.add_to_cart_impl(product_id="p2", quantity=1, session_id="session-1")
+
+    result = json.loads(await cart_tools.remove_from_cart_impl(product_id="p1", session_id="session-1"))
+
+    assert result["items"] == [{"product_id": "p2", "name": "Gadget", "quantity": 1}]
+
+
+async def test_update_quantity_impl_updates_existing_item(session):
+    await _seed_product(session)
+    await cart_tools.add_to_cart_impl(product_id="p1", quantity=1, session_id="session-1")
+
+    result = json.loads(await cart_tools.update_quantity_impl(product_id="p1", quantity=5, session_id="session-1"))
+
+    assert "error" not in result
+    assert result["items"] == [{"product_id": "p1", "name": "Widget", "quantity": 5}]
+    assert result["total"] == 49.95
+
+
+async def test_update_quantity_impl_sets_absolute_not_delta(session):
+    await _seed_product(session)
+    await cart_tools.add_to_cart_impl(product_id="p1", quantity=3, session_id="session-1")
+
+    result = json.loads(await cart_tools.update_quantity_impl(product_id="p1", quantity=1, session_id="session-1"))
+
+    assert result["items"] == [{"product_id": "p1", "name": "Widget", "quantity": 1}]
+
+
+async def test_update_quantity_impl_returns_error_for_item_not_in_cart(session):
+    await _seed_product(session)
+
+    result = json.loads(await cart_tools.update_quantity_impl(product_id="p1", quantity=2, session_id="session-1"))
+
+    assert result["error"] == "Item not in cart"
+
+
+async def test_update_quantity_impl_rejects_non_positive_quantity(session):
+    await _seed_product(session)
+    await cart_tools.add_to_cart_impl(product_id="p1", quantity=2, session_id="session-1")
+
+    result = json.loads(await cart_tools.update_quantity_impl(product_id="p1", quantity=0, session_id="session-1"))
+
+    assert "error" in result
+    view = json.loads(await cart_tools.view_cart_impl(session_id="session-1"))
+    assert view["items"] == [{"product_id": "p1", "name": "Widget", "quantity": 2}]  # unchanged, not deleted
+
+
+async def test_get_product_impl_returns_product_details(session):
+    await _seed_product(session, product_id="p1", name="Widget", price=9.99)
+
+    result = json.loads(await cart_tools.get_product_impl(product_id="p1"))
+
+    assert result["id"] == "p1"
+    assert result["name"] == "Widget"
+    assert result["price"] == 9.99
+    assert result["category"] == "Electronics"
+
+
+async def test_get_product_impl_returns_error_for_missing_product(session):
+    result = json.loads(await cart_tools.get_product_impl(product_id="nonexistent"))
+
+    assert result["error"] == "Product not found"
