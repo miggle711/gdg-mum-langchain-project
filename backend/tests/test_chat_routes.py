@@ -1,7 +1,7 @@
 import importlib
 import sys
 from contextlib import contextmanager
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -73,8 +73,8 @@ async def test_chat_route_uses_langgraph_and_preserves_response_shape(mocker, ch
     # read the assistant text from the graph's "response" field.
     invoke = mocker.patch.object(
         chat_module.chat_graph,
-        "invoke",
-        return_value={"intent": "small_talk", "response": "GRAPH_WIRED_SENTINEL"},
+        "ainvoke",
+        AsyncMock(return_value={"intent": "small_talk", "response": "GRAPH_WIRED_SENTINEL"}),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -97,7 +97,7 @@ async def test_chat_route_uses_langgraph_and_preserves_response_shape(mocker, ch
     # Prove the route sends the expected graph state and callback config, rather
     # than bypassing the graph or calling an older agent entry point.
     invoke.assert_called_once_with(
-        {"input": "hello", "chat_history": []},
+        {"input": "hello", "chat_history": [], "session_id": "conv-1"},
         config={"callbacks": [handler]},
     )
 
@@ -139,8 +139,8 @@ async def test_chat_stream_route_uses_langgraph_and_preserves_sse_contract(mocke
     # result into the existing SSE protocol.
     invoke = mocker.patch.object(
         chat_module.chat_graph,
-        "invoke",
-        return_value={"intent": "product_details", "response": "GRAPH_STREAM_SENTINEL"},
+        "ainvoke",
+        AsyncMock(return_value={"intent": "product_details", "response": "GRAPH_STREAM_SENTINEL"}),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -165,7 +165,7 @@ async def test_chat_stream_route_uses_langgraph_and_preserves_sse_contract(mocke
     # The stream route should still route through LangGraph with the same message
     # payload and callback wiring as the non-streaming endpoint.
     invoke.assert_called_once_with(
-        {"input": "show me shoes", "chat_history": []},
+        {"input": "show me shoes", "chat_history": [], "session_id": "conv-2"},
         config={"callbacks": [handler]},
     )
 

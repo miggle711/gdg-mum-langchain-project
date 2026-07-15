@@ -21,6 +21,7 @@ ALLOWED_INTENTS = {"product_details", "small_talk", "sensitive_topic", "clarify"
 class GraphState(TypedDict, total=False):
     input: str
     chat_history: list[BaseMessage]
+    session_id: str
     intent: Intent
     response: str
 
@@ -85,10 +86,10 @@ def _start_graph_span(name: str, state: GraphState):
         metadata={"component": "langgraph"},
     )
 
-def classify_intent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
+async def classify_intent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
     with _start_graph_span("graph.classify_intent", state) as span:
         try:
-            result = _intent_classifier.invoke(
+            result = await _intent_classifier.ainvoke(
                 {
                     "input": state.get("input", ""),
                     "chat_history": state.get("chat_history", []),
@@ -112,20 +113,21 @@ def classify_intent(state: GraphState, config: RunnableConfig | None = None) -> 
         return {"intent": intent}
 
 
-def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
+async def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
     from app.agent import agent_executor
-    return agent_executor.invoke(
+    return await agent_executor.invoke(
         {
             "input": state.get("input", ""),
             "chat_history": state.get("chat_history", []),
         },
         config=config,
+        session_id=state.get("session_id"),
     )
 
 
-def product_node(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
+async def product_node(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
     with _start_graph_span("graph.product_node", state) as span:
-        result = _invoke_product_agent(state, config=config)
+        result = await _invoke_product_agent(state, config=config)
         response = result.get("output") or "I apologize, but I'm having trouble generating a response at the moment."
         span.update(output={"response": response})
         return {"response": response}
@@ -145,7 +147,7 @@ def sensitive_node(state: GraphState) -> Dict[str, Any]:
         return {"response": response}
 
 
-def clarify_node(state: GraphState) -> Dict[str, Any]:
+async def clarify_node(state: GraphState) -> Dict[str, Any]:
     with _start_graph_span("graph.clarify_node", state) as span:
         response = "response from graph - clarify node placeholder"
         span.update(output={"response": response})

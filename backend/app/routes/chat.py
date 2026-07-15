@@ -68,8 +68,8 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
                 metadata={"route": "/chat"},
             )
 
-            result = chat_graph.invoke(
-                {"input": body.message, "chat_history": chat_history},
+            result = await chat_graph.ainvoke(
+                {"input": body.message, "chat_history": chat_history, "session_id": body.session_id},
                 config={"callbacks": [handler]},
             )
 
@@ -138,8 +138,8 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
                     metadata={"route": "/chat/stream"},
                 )
 
-                result = chat_graph.invoke(
-                    {"input": body.message, "chat_history": chat_history},
+                result = await chat_graph.ainvoke(
+                    {"input": body.message, "chat_history": chat_history, "session_id": body.session_id},
                     config={"callbacks": [stream_handler]},
                 )
                 response_text = result["response"]
