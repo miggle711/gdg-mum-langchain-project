@@ -9,6 +9,7 @@ from langfuse import Langfuse, get_client
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools import PRODUCT_TOOLS
+from cart_tools import CART_TOOLS
 from app.config import settings
 
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
@@ -36,8 +37,9 @@ _llm = ChatGoogleGenerativeAI(
     google_api_key=settings.google_api_key,
     temperature=0.7,
 )
-_tool_enabled_llm = _llm.bind_tools(PRODUCT_TOOLS)
-_tool_map = {tool.name: tool for tool in PRODUCT_TOOLS}
+ALL_TOOLS = PRODUCT_TOOLS + CART_TOOLS
+_tool_enabled_llm = _llm.bind_tools(ALL_TOOLS)
+_tool_map = {tool.name: tool for tool in ALL_TOOLS}
 
 
 def _build_messages(payload: dict[str, Any]) -> list[BaseMessage]:
@@ -66,12 +68,17 @@ def _message_text(message: AIMessage) -> str:
     return str(content or "")
 
 
-def _run_product_agent(payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, str]:
+async def _run_product_agent(
+    payload: dict[str, Any],
+    config: dict[str, Any] | None = None,
+    *,
+    session_id: str | None = None,
+) -> dict[str, str]:
     messages = _build_messages(payload)
     last_ai_message: AIMessage | None = None
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        ai_message = _tool_enabled_llm.invoke(messages, config=config)
+        ai_message = await _tool_enabled_llm.ainvoke(messages, config=config)
         last_ai_message = ai_message
         messages.append(ai_message)
 
@@ -85,7 +92,14 @@ def _run_product_agent(payload: dict[str, Any], config: dict[str, Any] | None = 
             if tool is None:
                 tool_result = f"Tool '{tool_name}' is not available."
             else:
-                tool_result = tool.invoke(tool_call.get("args", {}), config=config)
+                # session_id is a trusted value injected by this loop, never
+                # an LLM-fillable tool argument — tools that need it (cart
+                # tools) declare so via a marker attribute, not by exposing
+                # session_id in their args_schema.
+                call_args = tool_call.get("args", {})
+                if getattr(tool, "_needs_session_id", False):
+                    call_args = {**call_args, "session_id": session_id}
+                tool_result = await tool.ainvoke(call_args, config=config)
 
             messages.append(
                 ToolMessage(
@@ -99,11 +113,23 @@ def _run_product_agent(payload: dict[str, Any], config: dict[str, Any] | None = 
 
 
 class AgentExecutorAdapter:
-    def invoke(self, payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, str]:
-        return _run_product_agent(payload, config=config)
+    async def invoke(
+        self,
+        payload: dict[str, Any],
+        config: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, str]:
+        return await _run_product_agent(payload, config=config, session_id=session_id)
 
-    async def astream(self, payload: dict[str, Any], config: dict[str, Any] | None = None):
-        result = _run_product_agent(payload, config=config)
+    async def astream(
+        self,
+        payload: dict[str, Any],
+        config: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+    ):
+        result = await _run_product_agent(payload, config=config, session_id=session_id)
         if result["output"]:
             yield {"output": result["output"]}
 
