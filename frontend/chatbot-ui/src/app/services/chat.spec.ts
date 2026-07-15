@@ -17,7 +17,7 @@ describe('Chat', () => {
 
   // Test to check if the send method returns a mock reply as expected
   it('should return a mock reply', async () => {
-    const response = await service.send('hello').toPromise();
+    const response = await service.send('hello', 'test-session-id').toPromise();
     expect(response!.reply).toContain('Mock reply to: hello');
   });
 });

@@ -8,6 +8,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatDividerModule } from '@angular/material/divider';
 import { TextFieldModule } from '@angular/cdk/text-field';
 import { Chat } from '../../services/chat';
+import { Session } from '../../services/session';
 
 /**
  * ChatPanel is an Angular component that provides a user interface for a chatbot conversation. 
@@ -49,39 +50,59 @@ export class ChatPanel implements AfterViewChecked, OnInit {
   // ]
   messages: { role: 'user' | 'assistant'; text: string; traceId?: string; feedback?: boolean }[] = [];
   private shouldScroll = false;
+  private sessionId = '';
 
-  // add the Chat service from the services folder, which is responsible for communicating with the backend API to start conversations and send messages,
+  // add the Chat service from the services folder, which is responsible for communicating with the backend API to send messages,
+  // the Session service, which resolves/persists the session_id across page refreshes (localStorage),
   //  as well as ChangeDetectorRef to manually trigger change detection when we update the messages array or loading state
-  constructor(private chat: Chat, private cdr: ChangeDetectorRef) {}
+  constructor(private chat: Chat, private session: Session, private cdr: ChangeDetectorRef) {}
 
 
-  // OnInit is a lifecycle hook that is called after the component is initialized, and we use it to start a new conversation with the chatbot when the component loads
+  // OnInit is a lifecycle hook that is called after the component is initialized, and we use it to resolve the session and load the conversation when the component loads
   // a hook is a special method that Angular calls at specific points in the component's lifecycle, allowing us to run custom code when those events occur (like when the component is created, updated, or destroyed)
   ngOnInit() {
-    this.initializeConversation();
+    this.initializeSession();
   }
 
-  private initializeConversation() {
+  private initializeSession() {
     /**
-     * This method initializes a new conversation with the chatbot by calling the startConversation method of the Chat service.
-     * It subscribes to the Observable returned by startConversation to handle the asynchronous response from the backend.
-     * On success, it sets the initial message from the chatbot and stores the conversation ID in the Chat service for future messages.
-     * On error, it displays an error message in the chat panel.
+     * Resolves (or mints) the session_id via the Session service. On a
+     * fresh browser (no persisted session_id), this is equivalent to the
+     * old startConversation() flow — a new session is created and the
+     * welcome message is shown. On a returning visit (session_id already
+     * in localStorage), prior chat history is rehydrated from
+     * GET /conversation/{session_id} instead, so persisting session_id
+     * across refreshes actually has a visible effect. If that history is
+     * empty (e.g. Redis TTL expired since the last visit), falls back to
+     * the welcome message just like a fresh session would.
      */
+    this.session.getOrCreateSessionId().subscribe({
+      next: (sessionId) => {
+        this.sessionId = sessionId;
+        console.log('Session resolved:', sessionId);
 
-    // We call the startConversation method of the Chat service, which returns an Observable that we subscribe to in order to handle the response from the backend
-    // the observable will emit the conversation ID and initial message from the backend when the conversation is successfully started, or an error if something goes wrong
-    this.chat.startConversation().subscribe({
-      next: (response) => {
-        console.log('Chat initialized, conversation ID:', response.conversation_id);
-
-        // We set the initial message from the chatbot in the messages array, which will be displayed in the chat panel.
-        this.messages = [{ role: 'assistant', text: response.message }];
-        this.shouldScroll = true; 
-        this.cdr.markForCheck(); // we manually trigger change detection to ensure the UI updates with the new message and scrolls to the bottom of the chat panel
+        this.chat.getConversation(sessionId).subscribe({
+          next: (response) => {
+            this.messages = response.history.map((m) => ({
+              role: m.role === 'human' ? 'user' : 'assistant',
+              text: m.content,
+            }));
+            this.shouldScroll = true;
+            this.cdr.markForCheck();
+          },
+          error: () => {
+            // No prior history for this session (fresh session, or an
+            // expired one) — show the same welcome message a new session gets.
+            this.messages = [
+              { role: 'assistant', text: 'Welcome to our store! How can I help you find the perfect product today?' },
+            ];
+            this.shouldScroll = true;
+            this.cdr.markForCheck();
+          },
+        });
       },
       error: (error) => {
-        console.error('Failed to start conversation:', error);
+        console.error('Failed to resolve session:', error);
         this.messages = [{ role: 'assistant', text: 'Failed to start chat. Please refresh and try again.' }];
         this.cdr.markForCheck();
       },
@@ -125,6 +146,7 @@ export class ChatPanel implements AfterViewChecked, OnInit {
 
     this.chat.sendStream(
       text,
+      this.sessionId,
       (traceId) => {
         this.messages[assistantIndex].traceId = traceId;
         this.cdr.markForCheck();
