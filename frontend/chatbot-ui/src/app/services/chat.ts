@@ -5,42 +5,24 @@ import { map } from 'rxjs/operators';
 
 
 // Injectable means this service can be injected into components
-@Injectable({ 
+@Injectable({
   providedIn: 'root', // This makes the service available application-wide without needing to add it to a module's providers array
 })
 export class Chat {
   private apiUrl = 'http://localhost:8000';  // Base URL for the backend API
-  private conversationId: string = ''; // Store the current conversation ID
 
-  constructor(private http: HttpClient) {} 
+  constructor(private http: HttpClient) {}
 
-  // an observable is a stream of data that components can subscribe (listen) to, allowing them to react to new data as it arrives without needing to poll for changes
-  startConversation(): Observable<{ conversation_id: string; message: string }> {
-    /**
-     * This method starts a new conversation by making a POST request to the backend's /chat/start endpoint.
-     * 
-     * args: none
-     * returns: an Observable that emits the conversation ID and initial message from the backend
-     */
-    console.log('Starting new conversation...');
-    // We make a POST request to the backend to start a new conversation, 
-    // which returns a conversation ID and an initial message
-    return this.http.post<any>(`${this.apiUrl}/chat/start`, {}).pipe(
-      map((response) => { // we destructure the response to get the conversation ID and initial message
-        console.log('Conversation started with ID:', response.conversation_id);
-        this.conversationId = response.conversation_id;  // we store the conversation ID in the service so it can be used for subsequent messages
-        return response;
-      })
-    );
+  // Fetches prior chat history for a session (used to rehydrate the panel
+  // on a returning visit, when Session already has a persisted session_id).
+  getConversation(sessionId: string): Observable<{ session_id: string; history: { role: string; content: string }[]; message_count: number }> {
+    return this.http.get<any>(`${this.apiUrl}/conversation/${sessionId}`);
   }
 
-  send(userPrompt: string): Observable<ChatResponse> {
-    if (!this.conversationId) {
-      throw new Error('Conversation not started. Call startConversation() first.');
-    }
+  send(userPrompt: string, sessionId: string): Observable<ChatResponse> {
     return this.http
       .post<any>(`${this.apiUrl}/chat`, {
-        conversation_id: this.conversationId,
+        session_id: sessionId,
         message: userPrompt,
       })
       .pipe(
@@ -52,19 +34,16 @@ export class Chat {
   // Calls onToken for each text chunk and onDone when the stream ends.
   async sendStream(
     userPrompt: string,
+    sessionId: string,
     onTraceId: (traceId: string) => void,
     onToken: (token: string) => void,
     onDone: (fullText: string) => void,
     onError: (err: string) => void,
   ): Promise<void> {
-    if (!this.conversationId) {
-      throw new Error('Conversation not started. Call startConversation() first.');
-    }
-
     const response = await fetch(`${this.apiUrl}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_id: this.conversationId, message: userPrompt }),
+      body: JSON.stringify({ session_id: sessionId, message: userPrompt }),
     });
 
     if (!response.ok || !response.body) {
@@ -113,15 +92,6 @@ export class Chat {
     }
 
     onDone(fullText);
-  }
-
-  // Getter and setter for the conversation ID, which can be useful if we want to manage the conversation ID separately or need to reset it when starting a new conversation
-  getConversationId(): string {
-    return this.conversationId;
-  }
-
-  setConversationId(id: string): void {
-    this.conversationId = id;
   }
 
   sendFeedback(traceId: string, value: boolean, comment?: string) {
