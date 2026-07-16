@@ -60,8 +60,8 @@ def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, moc
     mocker.patch("cache.get_cached_review_search", return_value=None)
     set_cached = mocker.patch("cache.set_cached_review_search")
     mock_es.search.return_value = _es_response([
-        _hit(product_id="p1", title="Low match", text="meh", rating=3.0, verified_purchase=True, helpful_vote=1),
-        _hit(product_id="p2", title="High match", text="great", rating=5.0, verified_purchase=True, helpful_vote=9),
+        _hit(product_id="p1", product_name="Widget", title="Low match", text="meh", rating=3.0, verified_purchase=True, helpful_vote=1),
+        _hit(product_id="p2", product_name="Gadget", title="High match", text="great", rating=5.0, verified_purchase=True, helpful_vote=9),
     ])
     # reranker scores the first candidate lower than the second, despite ES order
     mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.2, 0.9])
@@ -70,6 +70,7 @@ def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, moc
 
     assert len(results) == 1
     assert results[0]["product_id"] == "p2"
+    assert results[0]["product_name"] == "Gadget"
     assert results[0]["similarity"] == 0.9
     set_cached.assert_called_once()
 

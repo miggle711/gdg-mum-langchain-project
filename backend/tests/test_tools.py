@@ -138,13 +138,14 @@ def test_search_reviews_impl_defaults_limit_to_5_when_none(mocker, tools_module,
 def test_search_reviews_impl_formats_similarity_as_percent(mocker, tools_module, mock_embedding_model):
     mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
     mocker.patch("tools.semantic_search_reviews", return_value=[{
-        "product_id": "p1", "rating": 4.5, "title": "Great battery",
+        "product_id": "p1", "product_name": "Widget", "rating": 4.5, "title": "Great battery",
         "text": "Lasts all day", "similarity": 0.873,
     }])
 
     result = json.loads(tools_module.search_reviews_impl("battery life"))
 
     assert result["results"][0]["similarity"] == "87%"
+    assert result["results"][0]["product_name"] == "Widget"
 
 
 def test_search_reviews_impl_empty_results_returns_message(mocker, tools_module, mock_embedding_model):

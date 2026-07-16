@@ -70,14 +70,17 @@ async def load_products() -> list[dict]:
 
 async def load_reviews() -> list[dict]:
     async with get_session() as session:
-        result = await session.execute(select(Review))
-        reviews = result.scalars().all()
+        result = await session.execute(
+            select(Review, Product.name).join(Product, Review.product_id == Product.id)
+        )
+        rows = result.all()
 
     docs = []
-    for r in reviews:
+    for r, product_name in rows:
         docs.append({
             "id": str(r.id),
             "product_id": r.product_id,
+            "product_name": product_name,
             "rating": r.rating,
             "title": r.title or "",
             "text": r.text or "",

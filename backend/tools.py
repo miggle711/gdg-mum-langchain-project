@@ -106,6 +106,7 @@ def search_reviews_impl(query: str, limit: Optional[int] = 5) -> str:
         for r in results:
             formatted_results.append({
                 "product_id": r["product_id"],
+                "product_name": r.get("product_name", ""),
                 "rating": r["rating"],
                 "title": r["title"],
                 "text": r["text"],

@@ -81,6 +81,7 @@ def init_reviews_index() -> None:
             "properties": {
                 "id":                {"type": "keyword"},
                 "product_id":        {"type": "keyword"},
+                "product_name":      {"type": "text", "analyzer": "english"},
                 "title":             {"type": "text", "analyzer": "english"},
                 "text":              {"type": "text", "analyzer": "english"},
                 "rating":            {"type": "float"},
@@ -331,6 +332,7 @@ def semantic_search_reviews(query_text: str, query_embedding: List[float], limit
         src = hit["_source"]
         candidates.append({
             "product_id": src["product_id"],
+            "product_name": src.get("product_name", ""),
             "title": src.get("title", ""),
             "text": src.get("text", ""),
             "rating": src["rating"],
