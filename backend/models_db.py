@@ -148,7 +148,7 @@ class Payment(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     amount = Column(Float, nullable=False)
-    status = Column(String, nullable=False, default="succeeded")  # mocked — always succeeds in Phase 2, no real provider
+    status = Column(String, nullable=False, default="succeeded")  # mocked: always succeeds in Phase 2, no real provider
     provider_reference = Column(String, nullable=False)  # fake reference string, e.g. f"mock_{uuid4().hex}"
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
