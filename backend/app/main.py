@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.limiter import limiter
-from search import init_es_index, seed_products_if_empty
-from cache import init_cache_index
+from search import init_es_index, init_reviews_index
+from cache import init_cache_index, init_review_cache_index
 from db import run_migrations
 from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
@@ -29,9 +29,16 @@ from app.routes.cart import router as cart_router
 from app.routes.products import router as products_router
 
 init_es_index()
-seed_products_if_empty()
+init_reviews_index()
 init_cache_index()
+init_review_cache_index()
 run_migrations()
+# Data seeding (Postgres and Elasticsearch) is manual — see
+# scripts/seed_postgres.py and scripts/seed_elasticsearch.py. Only index/
+# schema creation happens automatically at boot, since ES seeding now
+# reads from Postgres and can't safely run as a fast, no-dependency
+# startup step the way the old HF-dataset-direct seed_products_if_empty()
+# could (see #51's discussion for why this isn't wired into startup).
 
 app = FastAPI(title="LangChain Conversation API")
 

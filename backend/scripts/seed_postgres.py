@@ -8,15 +8,17 @@ Or from the host:
     docker compose exec backend python scripts/seed_postgres.py
 
 Sources:
-  - products, product_images: McAuley-Lab/Amazon-Reviews-2023 raw_meta_{category}
-    (same 4 categories/500-per-category as index_products.py, re-read independently
-    since this script does not depend on Elasticsearch being populated first — the
-    two scripts can be run in either order or independently)
-  - reviews: McAuley-Lab/Amazon-Reviews-2023 raw_review_categories/{Category}, joined
+  - products, product_images: McAuley-Lab/Amazon-Reviews-2023 raw_meta_{category},
+    4 categories, up to 500 products/category
+  - reviews: McAuley-Lab/Amazon-Reviews-2023 raw_review_{category}, joined
     to products via parent_asin
   - users, addresses: synthetic, generated with Faker (no real user identities exist
     in the source dataset — review user_id values are opaque hashes, not usable as
     real user records)
+
+Run this before scripts/seed_elasticsearch.py, which reads products/reviews
+back out of Postgres to embed and index into Elasticsearch (#51) — this
+script has no Elasticsearch dependency of its own.
 """
 
 import asyncio
@@ -51,11 +53,12 @@ CATEGORY_DISPLAY = {
 
 
 def _parse_amazon_product(item: dict, category: str) -> dict | None:
-    """Filtering logic mirrors index_products.py's load_amazon_products() so
-    Product.id values in Postgres and ES _id values overlap 1:1 for the same
-    categories — otherwise reviews seeded via parent_asin join, or any future
-    cross-store lookup, will silently miss rows.
-    NOTE: keep in sync with index_products.py load_amazon_products().
+    """Filters and shapes a raw Amazon product record for insertion into
+    Product. Product.id (= parent_asin) is what scripts/seed_elasticsearch.py
+    later uses as the ES document _id when it reads these rows back out —
+    since that script derives IDs directly from Postgres rather than
+    re-parsing the dataset independently, there's no second copy of this
+    filtering logic to keep in sync with anymore (#51).
     """
     title = (item.get("title") or "").strip()
     description = " ".join(item.get("description") or []).strip()
@@ -87,9 +90,9 @@ def _parse_amazon_product(item: dict, category: str) -> dict | None:
 
 def load_products_and_images() -> tuple[list[dict], list[dict]]:
     """Streams product metadata, returning (product_rows, image_rows).
-    Unlike index_products.py, this does NOT generate embeddings — Postgres
-    doesn't need vectors — and extracts every image URL (not just the first)
-    into ordered product_images rows."""
+    Unlike scripts/seed_elasticsearch.py, this does NOT generate embeddings —
+    Postgres doesn't need vectors — and extracts every image URL (not just
+    the first) into ordered product_images rows."""
     product_rows: list[dict] = []
     image_rows: list[dict] = []
 

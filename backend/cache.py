@@ -17,6 +17,13 @@ SEARCH_CACHE_SIMILARITY_THRESHOLD = settings.search_cache_similarity_threshold
 CACHE_INDEX = "idx:search_cache"
 CACHE_PREFIX = "search_cache:"
 
+# Separate namespace for review search — get_cached_search's KNN lookup has
+# no query-type discriminator field, so sharing one index between product
+# and review search risks a review query returning a cached product-search
+# result (or vice versa) as a false-positive nearest-neighbor hit.
+REVIEW_CACHE_INDEX = "idx:review_search_cache"
+REVIEW_CACHE_PREFIX = "review_search_cache:"
+
 # String pool — for conversation history
 _redis_pool = redis.ConnectionPool.from_url(
     settings.redis_url,
@@ -68,6 +75,30 @@ def init_cache_index() -> None:
     logger.info("Redis cache vector index created.")
 
 
+def init_review_cache_index() -> None:
+    r = _get_redis_binary()
+    try:
+        r.ft(REVIEW_CACHE_INDEX).info()
+        logger.info("Redis cache vector index '%s' already exists.", REVIEW_CACHE_INDEX)
+        return
+    except Exception:
+        pass
+
+    logger.info("Creating Redis cache vector index '%s'...", REVIEW_CACHE_INDEX)
+    r.ft(REVIEW_CACHE_INDEX).create_index(
+        fields=[
+            VectorField(
+                "embedding",
+                "HNSW",
+                {"TYPE": "FLOAT32", "DIM": EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE", "M": 16, "EF_CONSTRUCTION": 200},
+            ),
+            TextField("results"),
+        ],
+        definition=IndexDefinition(prefix=[REVIEW_CACHE_PREFIX], index_type=IndexType.HASH),
+    )
+    logger.info("Redis cache vector index created.")
+
+
 def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
     r = _get_redis_binary()
     query_bytes = _embedding_to_bytes(query_embedding)
@@ -104,3 +135,41 @@ def set_cached_search(query_text: str, query_embedding: List[float], results: Li
     pipe.expire(key, SEARCH_CACHE_TTL_SECONDS)
     pipe.execute()
     logger.info("Search result cached under key=%s (TTL=%ds)", key, SEARCH_CACHE_TTL_SECONDS)
+
+
+def get_cached_review_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
+    r = _get_redis_binary()
+    query_bytes = _embedding_to_bytes(query_embedding)
+    threshold = 1.0 - SEARCH_CACHE_SIMILARITY_THRESHOLD
+
+    q = (
+        Query("*=>[KNN 1 @embedding $vec AS score]")
+        .sort_by("score")
+        .return_fields("score", "results")
+        .dialect(2)
+    )
+    results = r.ft(REVIEW_CACHE_INDEX).search(q, query_params={"vec": query_bytes})
+
+    if not results.docs:
+        return None
+
+    doc = results.docs[0]
+    distance = float(doc.score)
+    if distance > threshold:
+        return None
+
+    logger.info("Review search cache HIT (cosine distance=%.3f, key=%s)", distance, doc.id)
+    return json.loads(doc.results)
+
+
+def set_cached_review_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
+    r = _get_redis_binary()
+    key = f"{REVIEW_CACHE_PREFIX}{abs(hash(query_text))}"
+    pipe = r.pipeline()
+    pipe.hset(key, mapping={
+        "embedding": _embedding_to_bytes(query_embedding),
+        "results": json.dumps(results),
+    })
+    pipe.expire(key, SEARCH_CACHE_TTL_SECONDS)
+    pipe.execute()
+    logger.info("Review search result cached under key=%s (TTL=%ds)", key, SEARCH_CACHE_TTL_SECONDS)
