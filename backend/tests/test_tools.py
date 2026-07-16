@@ -114,6 +114,58 @@ def test_semantic_search_impl_catches_exceptions(mocker, tools_module, mock_embe
     assert result["error"] == "model error"
 
 
+def test_search_reviews_impl_uses_bge_retrieval_prefix(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mock_search = mocker.patch("tools.semantic_search_reviews", return_value=[])
+
+    tools_module.search_reviews_impl("battery life complaints")
+
+    encode_call = mock_embedding_model.encode.call_args
+    assert encode_call.args[0] == "Represent this sentence for searching relevant passages: battery life complaints"
+    assert encode_call.kwargs["normalize_embeddings"] is True
+    assert mock_search.call_args.args[0] == "battery life complaints"
+
+
+def test_search_reviews_impl_defaults_limit_to_5_when_none(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mock_search = mocker.patch("tools.semantic_search_reviews", return_value=[])
+
+    tools_module.search_reviews_impl("battery life", limit=None)
+
+    assert mock_search.call_args.kwargs["limit"] == 5
+
+
+def test_search_reviews_impl_formats_similarity_as_percent(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mocker.patch("tools.semantic_search_reviews", return_value=[{
+        "product_id": "p1", "rating": 4.5, "title": "Great battery",
+        "text": "Lasts all day", "similarity": 0.873,
+    }])
+
+    result = json.loads(tools_module.search_reviews_impl("battery life"))
+
+    assert result["results"][0]["similarity"] == "87%"
+
+
+def test_search_reviews_impl_empty_results_returns_message(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mocker.patch("tools.semantic_search_reviews", return_value=[])
+
+    result = json.loads(tools_module.search_reviews_impl("nonexistent"))
+
+    assert result["results"] == []
+    assert "message" in result
+
+
+def test_search_reviews_impl_catches_exceptions(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.side_effect = RuntimeError("model error")
+
+    result = json.loads(tools_module.search_reviews_impl("battery life"))
+
+    assert result["results"] == []
+    assert result["error"] == "model error"
+
+
 def test_list_categories_impl_returns_name_and_icon_only(mocker, tools_module):
     mocker.patch("tools.get_categories", return_value=[
         {"name": "Electronics", "icon": "📦", "extra_field": "ignored"},
@@ -135,4 +187,4 @@ def test_list_categories_impl_catches_exceptions(mocker, tools_module):
 
 def test_product_tools_have_expected_names(tools_module):
     names = {t.name for t in tools_module.PRODUCT_TOOLS}
-    assert names == {"semantic_search", "query_products", "list_categories"}
+    assert names == {"semantic_search", "query_products", "list_categories", "search_reviews"}

@@ -1,6 +1,6 @@
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
-from search import query_products, get_categories, semantic_search
+from search import query_products, get_categories, semantic_search, semantic_search_reviews
 import search
 from typing import Optional
 import json
@@ -16,6 +16,11 @@ class QueryProductsInput(BaseModel):
 class SemanticSearchInput(BaseModel):
     query: str = Field(description="Natural language description of what the customer is looking for")
     limit: Optional[int] = Field(5, description="Number of results to return")
+
+
+class SearchReviewsInput(BaseModel):
+    query: str = Field(description="What the customer wants to know from reviews, e.g. 'battery life complaints' or 'is the sizing accurate'")
+    limit: Optional[int] = Field(5, description="Number of review results to return")
 
 
 def query_products_impl(
@@ -88,6 +93,30 @@ def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
         return json.dumps({"error": str(e), "results": []})
 
 
+def search_reviews_impl(query: str, limit: Optional[int] = 5) -> str:
+    try:
+        prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
+        embedding = search.get_embedding_model().encode(prefixed_query, normalize_embeddings=True).tolist()
+        results = semantic_search_reviews(query, embedding, limit=limit or 5)
+
+        if not results:
+            return json.dumps({"results": [], "message": "No matching reviews found"})
+
+        formatted_results = []
+        for r in results:
+            formatted_results.append({
+                "product_id": r["product_id"],
+                "rating": r["rating"],
+                "title": r["title"],
+                "text": r["text"],
+                "similarity": f"{r['similarity']:.0%}",
+            })
+
+        return json.dumps({"results": formatted_results, "count": len(formatted_results)})
+    except Exception as e:
+        return json.dumps({"error": str(e), "results": []})
+
+
 def list_categories_impl() -> str:
     try:
         categories = get_categories()
@@ -122,5 +151,16 @@ PRODUCT_TOOLS = [
         func=list_categories_impl,
         name="list_categories",
         description="List all available product categories.",
+    ),
+    StructuredTool(
+        name="search_reviews",
+        func=search_reviews_impl,
+        args_schema=SearchReviewsInput,
+        description=(
+            "Search customer review text for opinions and experiences, not for finding products "
+            "themselves. Use when the customer asks what people say or think about something (e.g. "
+            "'what do people say about the battery life', 'are the reviews good on sizing'), not "
+            "when they're looking for a product to buy — use semantic_search or query_products for that."
+        ),
     ),
 ]
