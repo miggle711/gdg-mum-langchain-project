@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools import PRODUCT_TOOLS
 from cart_tools import CART_TOOLS
+from order_tools import ORDER_TOOLS
 from app.config import settings
 
 ECOMMERCE_SYSTEM_PROMPT = """You are a helpful and professional ecommerce customer service assistant for our online store.
@@ -24,6 +25,7 @@ Tool usage guidelines:
 - Use query_products for exact filters like "electronics under $50" or "books with rating above 4.5"
 - When filtering by category with query_products, call list_categories first to get exact category names
 - You can combine both tools — semantic_search to find relevant products, then describe them with price/rating details
+- Use view_order_history when a customer asks about past orders or order/payment status — do not use it for their current cart
 
 Response guidelines:
 - Always be polite, professional, and empathetic
@@ -37,7 +39,7 @@ _llm = ChatGoogleGenerativeAI(
     google_api_key=settings.google_api_key,
     temperature=0.7,
 )
-ALL_TOOLS = PRODUCT_TOOLS + CART_TOOLS
+ALL_TOOLS = PRODUCT_TOOLS + CART_TOOLS + ORDER_TOOLS
 _tool_enabled_llm = _llm.bind_tools(ALL_TOOLS)
 _tool_map = {tool.name: tool for tool in ALL_TOOLS}
 
