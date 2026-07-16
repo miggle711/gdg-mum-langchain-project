@@ -270,7 +270,12 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     reranker = get_reranker()
     pairs = [(query_text, f"{c['name']}. {c['description']}") for c in candidates]
     t1 = time.perf_counter()
-    scores = reranker.predict(pairs).tolist()
+    # activation_fct squashes the cross-encoder's raw (unbounded) logits into
+    # (0, 1) so "similarity" is a meaningful percentage rather than something
+    # like "331%" (#71) — a numerically stable sigmoid built into torch,
+    # rather than hand-rolling one.
+    import torch
+    scores = reranker.predict(pairs, activation_fct=torch.sigmoid).tolist()
     rerank_latency.observe(time.perf_counter() - t1)
 
     for candidate, score in zip(candidates, scores):
@@ -349,7 +354,8 @@ def semantic_search_reviews(query_text: str, query_embedding: List[float], limit
     reranker = get_reranker()
     pairs = [(query_text, f"{c['title']}. {c['text']}") for c in candidates]
     t1 = time.perf_counter()
-    scores = reranker.predict(pairs).tolist()
+    import torch
+    scores = reranker.predict(pairs, activation_fct=torch.sigmoid).tolist()
     rerank_latency.observe(time.perf_counter() - t1)
 
     for candidate, score in zip(candidates, scores):

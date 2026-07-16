@@ -1,3 +1,5 @@
+import torch
+
 from search import semantic_search
 
 
@@ -70,6 +72,22 @@ def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, moc
     assert results[0]["similarity"] == 0.9
     assert "description" not in results[0]
     set_cached.assert_called_once()
+
+
+def test_reranker_predict_uses_sigmoid_activation(mocker, mock_es, mock_reranker):
+    # torch.sigmoid squashes the cross-encoder's raw (unbounded) logits into
+    # (0, 1) so "similarity" is a meaningful percentage rather than
+    # something like "331%" or "-1036%" (#71).
+    mocker.patch("cache.get_cached_search", return_value=None)
+    mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([
+        _hit(id="p1", name="Widget", description="desc", price=10, rating=4.0, reviews=5, category="Books"),
+    ])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.5])
+
+    semantic_search("query", [0.1] * 768, limit=1)
+
+    assert mock_reranker.predict.call_args.kwargs["activation_fct"] is torch.sigmoid
 
 
 def test_reranker_receives_query_paired_with_name_and_description(mocker, mock_es, mock_reranker):

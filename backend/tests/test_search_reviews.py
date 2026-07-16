@@ -1,3 +1,5 @@
+import torch
+
 from search import semantic_search_reviews
 
 
@@ -87,3 +89,19 @@ def test_reranker_receives_query_paired_with_title_and_text(mocker, mock_es, moc
 
     pairs = mock_reranker.predict.call_args.args[0]
     assert pairs == [("battery life", "Great battery. Lasts all day")]
+
+
+def test_reranker_predict_uses_sigmoid_activation(mocker, mock_es, mock_reranker):
+    # torch.sigmoid squashes the cross-encoder's raw (unbounded) logits into
+    # (0, 1) so "similarity" is a meaningful percentage rather than
+    # something like "331%" or "-1036%" (#71).
+    mocker.patch("cache.get_cached_review_search", return_value=None)
+    mocker.patch("cache.set_cached_review_search")
+    mock_es.search.return_value = _es_response([
+        _hit(product_id="p1", title="Great battery", text="Lasts all day", rating=5.0, verified_purchase=True, helpful_vote=3),
+    ])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.5])
+
+    semantic_search_reviews("battery life", [0.1] * 768, limit=5)
+
+    assert mock_reranker.predict.call_args.kwargs["activation_fct"] is torch.sigmoid
