@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datasets import load_dataset
 from faker import Faker
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from db import Base, get_engine, get_session
 from models_db import Address, Product, ProductImage, Review, User
@@ -242,6 +242,16 @@ async def main():
         session.add_all(User(**row) for row in user_rows)
         await session.commit()
         session.add_all(Address(**row) for row in address_rows)
+        await session.commit()
+
+        # User.id is assigned explicitly above (not autoincrement-generated),
+        # which leaves the users_id_seq sequence at its default starting
+        # value. Resync it to the actual max id so later autoincrement
+        # inserts (e.g. shadow users created via session_identity.py) don't
+        # collide with these seeded rows.
+        await session.execute(
+            text("SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))")
+        )
         await session.commit()
 
         print("\nDone. Row counts:")
