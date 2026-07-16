@@ -1,37 +1,39 @@
 # Product Storage
 
-The backend uses **Elasticsearch** as the product *search* store, combining full-text (BM25) search, exact-match filtering, and vector (kNN) search in a single index — this remains the read path for the `semantic_search`/`query_products`/`list_categories` agent tools. As of Phase 1 (see [Postgres (relational data)](#postgres-relational-data) below), **Postgres** also exists as a relational source of truth for products, users, addresses, and reviews, seeded independently from the same dataset. The two are not yet kept in sync with each other (no CDC — see the Notes section).
+The backend uses **Elasticsearch** as the product/review *search* store, combining full-text (BM25) search, exact-match filtering, and vector (kNN) search — this remains the read path for the `semantic_search`/`query_products`/`list_categories`/`search_reviews` agent tools. **Postgres** is the relational source of truth for products, reviews, users, addresses, carts, and orders (see [Postgres (relational data)](#postgres-relational-data) below). As of #51, Elasticsearch is seeded *from* Postgres, not independently from the raw dataset — see [Loading Sample Data](#loading-sample-data).
 
 For the full field-level index mapping, Postgres table schemas, and Redis key schemas, see [docs/db-models.md](../docs/db-models.md). This document covers setup, initialization, and the tool contracts the agent uses.
 
-## Index
+## Indices
 
-- **Name**: `products` (see `ES_INDEX` in `search.py`)
-- **Created by**: `init_es_index()` in `search.py`, called once at backend startup (`app/main.py`). It's idempotent — if the index already exists, it's left untouched.
-- **Connection**: configured via `ELASTICSEARCH_URL` (see `app/config.py`), defaults to `http://localhost:9200`.
+- **`products`** (see `ES_INDEX` in `search.py`): `id`, `name`, `description` (both full-text, English analyzer), `category` (keyword/exact-match), `price`, `original_price`, `rating`, `reviews` (numeric), `image` (stored but not indexed), and `embedding` (768-dim dense vector, cosine similarity — a `BAAI/bge-base-en-v1.5` embedding of the product's name + description).
+- **`reviews`** (see `REVIEWS_ES_INDEX` in `search.py`): `id`, `product_id` (keyword), `title`/`text` (both full-text, English analyzer), `rating`, `verified_purchase`, `helpful_vote`, and `embedding` (same 768-dim/cosine shape, a BGE embedding of the review's title + text).
 
-Each product document has: `id`, `name`, `description` (both full-text, English analyzer), `category` (keyword/exact-match), `price`, `original_price`, `rating`, `reviews` (numeric), `image` (stored but not indexed), and `embedding` (768-dim dense vector, cosine similarity — a `BAAI/bge-base-en-v1.5` embedding of the product's name + description).
+Both are **created by** `init_es_index()`/`init_reviews_index()` in `search.py`, called once at backend startup (`app/main.py`). Both are idempotent — if an index already exists, it's left untouched. **Connection**: configured via `ELASTICSEARCH_URL` (see `app/config.py`), defaults to `http://localhost:9200`.
 
 ## Loading Sample Data
 
-The index is created empty. To populate it with a sample catalog, run the indexing script (from inside the backend container):
+Startup only creates the empty index schemas — populating them with data is a manual, two-step process, since Elasticsearch is seeded from Postgres, not the raw dataset directly:
 
 ```bash
-docker compose exec backend python scripts/index_products.py
+docker compose exec backend python scripts/seed_postgres.py
+docker compose exec backend python scripts/seed_elasticsearch.py
 ```
 
-This script (`backend/scripts/index_products.py`):
+**Step 1** (`scripts/seed_postgres.py`, unchanged by #51) streams product/review metadata from the `McAuley-Lab/Amazon-Reviews-2023` dataset (4 categories, up to 500 products/category, ~200 reviews total — see #69 for the review-volume cap) and inserts it into Postgres.
 
-1. Deletes and recreates the `products` index for a clean run.
-2. Streams product metadata from the `McAuley-Lab/Amazon-Reviews-2023` dataset for 4 categories (`Sports_and_Outdoors`, `Electronics`, `Home_and_Kitchen`, `Toys_and_Games`), taking up to 500 products per category (~2k products total).
-3. Generates a BGE embedding for each product using the instruction prefix `"Represent this product for retrieval: {name}. {description}"`, batched (256 at a time) for efficiency.
-4. Bulk-indexes everything into Elasticsearch via `es_bulk_index()`.
+**Step 2** (`scripts/seed_elasticsearch.py`, replaces the old `index_products.py`):
 
-This is a one-time/manual step, not run automatically on backend startup — only the empty index schema is created automatically.
+1. Deletes and recreates both the `products` and `reviews` ES indices for a clean run.
+2. Reads `Product` and `Review` rows back out of Postgres (no HF dataset dependency of its own — requires step 1 to have run first).
+3. Generates a BGE embedding for each product (`"Represent this product for retrieval: {name}. {description}"`) and each review (`"Represent this review for retrieval: {title}. {text}"`), batched (256 at a time).
+4. Bulk-indexes everything into their respective ES indices.
 
-## Product Query Tools
+This is a one-time/manual step, not run automatically on backend startup. This is an intentional change from earlier versions of this project (issue #39), where product seeding read directly from the HF dataset and could safely auto-run as a fast startup check — now that ES depends on Postgres data existing, auto-seeding at boot would mean blocking every startup on a slow HF download + Postgres write + embedding pass, and would add a second external-network failure mode alongside #52's existing ES-unreachable-at-boot issue.
 
-The LangChain agent (`app/agent.py`) has access to three tools (defined in `tools.py`, backed by `search.py`):
+## Product and Review Query Tools
+
+The LangChain agent (`app/agent.py`) has access to four tools (defined in `tools.py`, backed by `search.py`):
 
 ### `semantic_search(query, limit=5)`
 
@@ -61,6 +63,15 @@ Returns all distinct category values in the index (via an Elasticsearch terms ag
 
 ```text
 Returns: [{"name": "Electronics", "icon": "📦"}, ...]
+```
+
+### `search_reviews(query, limit=5)`
+
+Natural-language search over review text — for questions about what customers say/think, not for finding products themselves (#51). Same hybrid BM25+kNN+rerank pipeline as `semantic_search`, but targets the `reviews` index (`title`/`text` fields instead of `name`/`description`) and its own separate Redis cache namespace (`idx:review_search_cache` — deliberately not shared with product search's cache, since a shared vector-only cache has no query-type discriminator and could return the wrong kind of cached result for a similar-looking query).
+
+```text
+Input: {"query": "battery life complaints", "limit": 5}
+Returns: Matching reviews (product_id, rating, title, text, similarity score)
 ```
 
 ## Testing Queries Directly
@@ -113,14 +124,14 @@ cd backend
 alembic upgrade head   # optional — the app also runs this automatically on boot
 ```
 
-**Seeding**: `python scripts/seed_postgres.py` (same invocation shape as `index_products.py` — run from inside the backend container, or via `docker compose exec backend python scripts/seed_postgres.py`). Sources:
-- `products`/`product_images`: same `McAuley-Lab/Amazon-Reviews-2023` dataset and category/product-count limits as `index_products.py`, re-read independently (not dependent on ES being populated first). Product filtering is kept in sync with `index_products.py` via a shared `_parse_amazon_product()`-style helper so `Product.id` values overlap 1:1 with the ES `_id` space.
-- `reviews`: real review text from the same dataset's `raw_review_categories/{Category}.jsonl` files, joined to seeded products via `parent_asin`.
+**Seeding**: `python scripts/seed_postgres.py` (run from inside the backend container, or via `docker compose exec backend python scripts/seed_postgres.py`). Sources:
+- `products`/`product_images`: `McAuley-Lab/Amazon-Reviews-2023` dataset, 4 categories, up to 500 products/category.
+- `reviews`: real review text from the same dataset's `raw_review_{category}` files, joined to seeded products via `parent_asin`, capped at ~200 total (see #69 — this cap is intentionally low today and can be raised).
 - `users`/`addresses`: **synthetic**, generated with Faker — no real user dataset exists in the source data (review `user_id` values are opaque anonymized hashes, not usable as real user records).
 
-Like `index_products.py`, this wipes and recreates the schema for a clean run each time — not incremental.
+This wipes and recreates the schema for a clean run each time — not incremental.
 
-**Sync note**: `products`/`product_images`/`reviews` in Postgres and the ES `products` index are currently two independently-seeded, non-synced copies of overlapping data (both scripts source from the same dataset but run independently, and can be run in either order). No CDC/sync exists between them (see `docs/cdc-reindex-pipeline.md`, tracked as issue #40 and explicitly deferred — no multi-writer/multi-consumer need justifies it today).
+**Sync note (updated by #51)**: Postgres is now the single source of truth Elasticsearch is seeded from — run `scripts/seed_postgres.py` first, then `scripts/seed_elasticsearch.py` (see [Loading Sample Data](#loading-sample-data)). This replaces the earlier setup where `index_products.py` and `seed_postgres.py` independently streamed from the same HF dataset with no relationship to each other. There is still no CDC/live-sync between the two stores after seeding — a later Postgres write only reaches ES if it goes through a code path that explicitly does so (see [Product write API (#49)](#product-write-api-49) below for the one that does). See `docs/cdc-reindex-pipeline.md` (issue #40, deferred) for the live-sync alternative.
 
 As of #49, this applies only to the two seed scripts' initial data. Writes made **through the product API routes** (`app/routes/products.py`) stay in sync: each route writes Postgres first, then performs the equivalent single-document ES write (`es_upsert_document`/`es_delete_document`), regenerating the BGE embedding on every create/update. This is lightweight and non-transactional — if the ES write fails after a successful Postgres commit, the request still returns success and the product is left stale in ES with no retry queue. See #40 (deferred) for the CDC-based alternative that would close this gap.
 
