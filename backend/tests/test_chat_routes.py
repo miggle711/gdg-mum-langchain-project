@@ -18,11 +18,10 @@ def _fake_span():
 @pytest.fixture
 def chat_test_app(mocker, mock_es, mock_redis_binary):
     # Satisfy startup checks so the FastAPI app can import without needing a real
-    # Elasticsearch index or Redis search backend.
+    # Elasticsearch index or Redis search backend. ES/Redis data seeding is
+    # manual (#51) — only index/schema creation runs at import time, so no
+    # es.count() mock is needed here anymore.
     mock_es.indices.exists.return_value = True
-    # seed_products_if_empty() (#39) checks es.count() at import time too —
-    # report a non-empty index so it skips the (real, slow) seed path.
-    mock_es.count.return_value = {"count": 1}
     mock_redis_binary.ft.return_value.info.return_value = {}
     # run_migrations() (Postgres Phase 1) also runs at import time and would
     # otherwise try to connect to a real database — no-op it here since this

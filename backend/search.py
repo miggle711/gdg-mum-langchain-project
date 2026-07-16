@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 ELASTICSEARCH_URL = settings.elasticsearch_url
 ES_INDEX = "products"
+REVIEWS_ES_INDEX = "reviews"
 EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 EMBEDDING_DIM = 768
@@ -69,25 +70,27 @@ def init_es_index() -> None:
     })
 
 
-def seed_products_if_empty() -> None:
-    """Fresh deployments (new clone, new machine, CI) otherwise start with
-    an empty index and silently return no search results — see issue #39.
-    Only ever runs the (slow) dataset download + embedding step once, on
-    the first boot against an empty index; every subsequent boot is a
-    cheap es.count() check."""
+def init_reviews_index() -> None:
     es = get_es()
-    es.indices.refresh(index=ES_INDEX)
-    count = es.count(index=ES_INDEX)["count"]
-    if count > 0:
-        logger.info("Elasticsearch index '%s' already has %d documents, skipping seed.", ES_INDEX, count)
+    if es.indices.exists(index=REVIEWS_ES_INDEX):
+        logger.info("Elasticsearch index '%s' already exists, skipping creation.", REVIEWS_ES_INDEX)
         return
-
-    logger.info("Elasticsearch index '%s' is empty — seeding sample product catalog...", ES_INDEX)
-    from scripts.index_products import load_amazon_products
-
-    docs = load_amazon_products()
-    es_bulk_index(docs)
-    logger.info("Seeded %d products into '%s'.", len(docs), ES_INDEX)
+    logger.info("Creating Elasticsearch index '%s'...", REVIEWS_ES_INDEX)
+    es.indices.create(index=REVIEWS_ES_INDEX, body={
+        "mappings": {
+            "properties": {
+                "id":                {"type": "keyword"},
+                "product_id":        {"type": "keyword"},
+                "product_name":      {"type": "text", "analyzer": "english"},
+                "title":             {"type": "text", "analyzer": "english"},
+                "text":              {"type": "text", "analyzer": "english"},
+                "rating":            {"type": "float"},
+                "verified_purchase": {"type": "boolean"},
+                "helpful_vote":      {"type": "integer"},
+                "embedding":         {"type": "dense_vector", "dims": EMBEDDING_DIM, "index": True, "similarity": "cosine"},
+            }
+        }
+    })
 
 
 def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
@@ -98,6 +101,19 @@ def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
     def _actions():
         for doc in documents:
             yield {"_index": ES_INDEX, "_id": doc["id"], "_source": doc}
+
+    bulk(es, _actions())
+    logger.info("Bulk indexing complete.")
+
+
+def es_bulk_index_reviews(documents: List[Dict[str, Any]]) -> None:
+    from elasticsearch.helpers import bulk
+    es = get_es()
+    logger.info("Bulk indexing %d documents into ES index '%s'...", len(documents), REVIEWS_ES_INDEX)
+
+    def _actions():
+        for doc in documents:
+            yield {"_index": REVIEWS_ES_INDEX, "_id": doc["id"], "_source": doc}
 
     bulk(es, _actions())
     logger.info("Bulk indexing complete.")
@@ -120,10 +136,17 @@ def es_delete_document(product_id: str) -> None:
 
 
 def build_product_embedding(name: str, description: Optional[str]) -> List[float]:
-    """Same document-side instruction prefix as scripts/index_products.py,
+    """Same document-side instruction prefix as scripts/seed_elasticsearch.py,
     so API-created products embed consistently with the seed dataset."""
     text = f"Represent this product for retrieval: {name}. {description or ''}"
     return get_embedding_model().encode(text, normalize_embeddings=True).tolist()
+
+
+def build_review_embedding(title: Optional[str], text: Optional[str]) -> List[float]:
+    """Same asymmetric document-side instruction-prefix convention as
+    build_product_embedding, applied to review title+text."""
+    combined = f"Represent this review for retrieval: {title or ''}. {text or ''}"
+    return get_embedding_model().encode(combined, normalize_embeddings=True).tolist()
 
 
 def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -247,7 +270,12 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     reranker = get_reranker()
     pairs = [(query_text, f"{c['name']}. {c['description']}") for c in candidates]
     t1 = time.perf_counter()
-    scores = reranker.predict(pairs).tolist()
+    # activation_fct squashes the cross-encoder's raw (unbounded) logits into
+    # (0, 1) so "similarity" is a meaningful percentage rather than something
+    # like "331%" (#71) — a numerically stable sigmoid built into torch,
+    # rather than hand-rolling one.
+    import torch
+    scores = reranker.predict(pairs, activation_fct=torch.sigmoid).tolist()
     rerank_latency.observe(time.perf_counter() - t1)
 
     for candidate, score in zip(candidates, scores):
@@ -261,4 +289,81 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
 
     set_cached_search(query_text, query_embedding, results)
     logger.info("semantic_search returned %d results after reranking", len(results))
+    return results
+
+
+def semantic_search_reviews(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+    """Same hybrid BM25+kNN+rerank shape as semantic_search, targeting the
+    reviews index and its own (separate) Redis cache namespace — see
+    cache.py's get/set_cached_review_search for why this doesn't share
+    the product-search cache."""
+    from cache import get_cached_review_search, set_cached_review_search
+    logger.info("semantic_search_reviews called: query='%s', limit=%d", query_text, limit)
+
+    cached = get_cached_review_search(query_embedding)
+    if cached is not None:
+        search_cache_hits.inc()
+        return cached[:limit]
+
+    search_cache_misses.inc()
+    es = get_es()
+    candidates_size = max(20, limit * 4)
+
+    t0 = time.perf_counter()
+    response = es.search(index=REVIEWS_ES_INDEX, body={
+        "size": candidates_size,
+        "query": {
+            "bool": {
+                "should": [
+                    {"multi_match": {
+                        "query": query_text,
+                        "fields": ["title^2", "text"],
+                        "boost": 0.5,
+                    }},
+                    {"knn": {
+                        "field": "embedding",
+                        "query_vector": query_embedding,
+                        "num_candidates": 50,
+                        "boost": 4.0,
+                    }},
+                ]
+            }
+        }
+    })
+    es_search_latency.observe(time.perf_counter() - t0)
+
+    candidates = []
+    for hit in response["hits"]["hits"]:
+        src = hit["_source"]
+        candidates.append({
+            "product_id": src["product_id"],
+            "product_name": src.get("product_name", ""),
+            "title": src.get("title", ""),
+            "text": src.get("text", ""),
+            "rating": src["rating"],
+            "verified_purchase": src.get("verified_purchase", False),
+            "helpful_vote": src.get("helpful_vote", 0),
+            "es_score": round(hit["_score"], 3),
+        })
+
+    if not candidates:
+        logger.info("semantic_search_reviews: no candidates from ES")
+        return []
+
+    logger.info("Re-ranking %d review candidates with cross-encoder...", len(candidates))
+    reranker = get_reranker()
+    pairs = [(query_text, f"{c['title']}. {c['text']}") for c in candidates]
+    t1 = time.perf_counter()
+    import torch
+    scores = reranker.predict(pairs, activation_fct=torch.sigmoid).tolist()
+    rerank_latency.observe(time.perf_counter() - t1)
+
+    for candidate, score in zip(candidates, scores):
+        candidate["similarity"] = round(score, 3)
+
+    candidates.sort(key=lambda x: x["similarity"], reverse=True)
+    results = candidates[:limit]
+
+    set_cached_review_search(query_text, query_embedding, results)
+    logger.info("semantic_search_reviews returned %d results after reranking", len(results))
     return results

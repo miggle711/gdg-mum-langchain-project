@@ -79,7 +79,7 @@ flowchart TD
     Cache --> R2[Return results]
 ```
 
-Product embeddings are generated once at index time (`backend/scripts/index_products.py`); query embeddings are generated per-request in `backend/tools.py`. Both use the same BGE model with matching (but asymmetric) instruction prefixes — `"Represent this product for retrieval: ..."` for documents, `"Represent this sentence for searching relevant passages: ..."` for queries — and both normalize embeddings so cosine similarity is meaningful.
+Product and review embeddings are generated once at index time (`backend/scripts/seed_elasticsearch.py`, reading from Postgres); query embeddings are generated per-request in `backend/tools.py`. Both use the same BGE model with matching (but asymmetric) instruction prefixes — `"Represent this product/review for retrieval: ..."` for documents, `"Represent this sentence for searching relevant passages: ..."` for queries — and both normalize embeddings so cosine similarity is meaningful.
 
 See [backend/DATABASE.md](backend/DATABASE.md) for the Elasticsearch index mapping and tool contracts, and [docs/db-models.md](docs/db-models.md) for the full data reference (ES fields + Redis key schemas).
 
@@ -169,15 +169,16 @@ docker compose up --build
 
 Then open `http://localhost` in your browser.
 
-### Load sample product data
+### Load sample data
 
-The Elasticsearch index is created empty on first startup. To populate it with a sample Amazon product catalog (~2k products across 4 categories):
+Postgres and Elasticsearch are both created empty on first startup — schema/index creation is automatic, but data seeding is a manual two-step process (Postgres first, since Elasticsearch now reads its seed data from Postgres rather than the raw dataset directly):
 
 ```bash
-docker compose exec backend python scripts/index_products.py
+docker compose exec backend python scripts/seed_postgres.py
+docker compose exec backend python scripts/seed_elasticsearch.py
 ```
 
-This generates BGE embeddings for each product and bulk-indexes them — see [backend/DATABASE.md](backend/DATABASE.md) for details.
+The first step loads a sample Amazon product/review catalog (~2k products, ~200 reviews across 4 categories) into Postgres. The second reads those rows back out, generates BGE embeddings for each product and review, and bulk-indexes them into Elasticsearch's `products` and `reviews` indices — see [backend/DATABASE.md](backend/DATABASE.md) for details.
 
 ### Running Tests
 
@@ -213,7 +214,8 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 - **backend/cache.py** — Redis semantic search cache (vector index)
 - **backend/conversations.py** — Redis-backed conversation history + summarisation
 - **backend/tools.py** — LangChain tool definitions the agent calls (wraps `search.py`)
-- **backend/scripts/index_products.py** — one-time script to load and embed sample product data
+- **backend/scripts/seed_postgres.py** — one-time script to load sample product/review data into Postgres
+- **backend/scripts/seed_elasticsearch.py** — one-time script to embed and index Postgres's products/reviews into Elasticsearch
 - **backend/scripts/run_graph_prompt.py** — simple terminal script for invoking `chat_graph` directly
 - **backend/app/config.py** — centralized settings (`pydantic-settings`), single source of truth for all tunables
 - **frontend/chatbot-ui/src/app/services/chat.ts** — HTTP/SSE service layer for the chat API
