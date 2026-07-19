@@ -78,6 +78,7 @@ async def _run_product_agent(
 ) -> dict[str, str]:
     messages = _build_messages(payload)
     last_ai_message: AIMessage | None = None
+    tool_calls_log: list[dict[str, Any]] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
         ai_message = await _tool_enabled_llm.ainvoke(messages, config=config)
@@ -85,7 +86,7 @@ async def _run_product_agent(
         messages.append(ai_message)
 
         if not ai_message.tool_calls:
-            return {"output": _message_text(ai_message)}
+            return {"output": _message_text(ai_message), "tool_calls": tool_calls_log}
 
         for tool_call in ai_message.tool_calls:
             tool_name = tool_call["name"]
@@ -103,6 +104,12 @@ async def _run_product_agent(
                     call_args = {**call_args, "session_id": session_id}
                 tool_result = await tool.ainvoke(call_args, config=config)
 
+            tool_calls_log.append({
+                "tool": tool_name,
+                "args": tool_call.get("args", {}),
+                "result": str(tool_result),
+            })
+
             messages.append(
                 ToolMessage(
                     content=str(tool_result),
@@ -111,7 +118,7 @@ async def _run_product_agent(
                 )
             )
 
-    return {"output": _message_text(last_ai_message) if last_ai_message else ""}
+    return {"output": _message_text(last_ai_message) if last_ai_message else "", "tool_calls": tool_calls_log}
 
 
 class AgentExecutorAdapter:
