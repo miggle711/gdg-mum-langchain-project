@@ -101,30 +101,32 @@ async def load_reviews() -> list[dict]:
 
 async def main():
     es = get_es()
-    if not es.ping():
+    if not await es.ping():
         print("ERROR: Cannot connect to Elasticsearch at", os.getenv("ELASTICSEARCH_URL", "http://localhost:9200"))
         sys.exit(1)
 
     for index in (ES_INDEX, REVIEWS_ES_INDEX):
-        if es.indices.exists(index=index):
+        if await es.indices.exists(index=index):
             print(f"Deleting existing '{index}' index...")
-            es.indices.delete(index=index)
+            await es.indices.delete(index=index)
 
-    init_es_index()
-    init_reviews_index()
+    await init_es_index()
+    await init_reviews_index()
     print(f"Created '{ES_INDEX}' and '{REVIEWS_ES_INDEX}' indices.")
 
     product_docs = await load_products()
     print(f"\nIndexing {len(product_docs)} products into Elasticsearch...")
-    es_bulk_index(product_docs)
+    await es_bulk_index(product_docs)
 
     review_docs = await load_reviews()
     print(f"\nIndexing {len(review_docs)} reviews into Elasticsearch...")
-    es_bulk_index_reviews(review_docs)
+    await es_bulk_index_reviews(review_docs)
 
     print("\nDone.")
-    print(f"  {ES_INDEX}: {es.count(index=ES_INDEX)['count']} documents")
-    print(f"  {REVIEWS_ES_INDEX}: {es.count(index=REVIEWS_ES_INDEX)['count']} documents")
+    print(f"  {ES_INDEX}: {(await es.count(index=ES_INDEX))['count']} documents")
+    print(f"  {REVIEWS_ES_INDEX}: {(await es.count(index=REVIEWS_ES_INDEX))['count']} documents")
+
+    await es.close()
 
 
 if __name__ == "__main__":

@@ -25,8 +25,8 @@ from app.limiter import limiter
 router = APIRouter()
 
 
-def get_or_create_conversation(session_id: str) -> ConversationData:
-    messages = load_messages(session_id)
+async def get_or_create_conversation(session_id: str) -> ConversationData:
+    messages = await load_messages(session_id)
     history = InMemoryChatMessageHistory()
     history.add_messages(messages)
     return {
@@ -38,10 +38,10 @@ def get_or_create_conversation(session_id: str) -> ConversationData:
 @limiter.limit("20/minute")
 async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     try:
-        conversation = get_or_create_conversation(body.session_id)
+        conversation = await get_or_create_conversation(body.session_id)
         history = conversation["history"]
 
-        summary, recent_messages = maybe_summarise(body.session_id, history.messages, _llm)
+        summary, recent_messages = await maybe_summarise(body.session_id, history.messages, _llm)
 
         chat_history = []
         if summary:
@@ -84,7 +84,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 
         history.add_user_message(body.message)
         history.add_ai_message(response_text)
-        save_messages(body.session_id, history.messages)
+        await save_messages(body.session_id, history.messages)
 
         return ChatResponse(
             session_id=body.session_id,
@@ -100,10 +100,10 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 @router.post("/chat/stream")
 @limiter.limit("20/minute")
 async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
-    conversation = get_or_create_conversation(body.session_id)
+    conversation = await get_or_create_conversation(body.session_id)
     history = conversation["history"]
 
-    summary, recent_messages = maybe_summarise(body.session_id, history.messages, _llm)
+    summary, recent_messages = await maybe_summarise(body.session_id, history.messages, _llm)
 
     chat_history = []
     if summary:
@@ -161,7 +161,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
             if full_response:
                 history.add_user_message(body.message)
                 history.add_ai_message(full_response)
-                save_messages(body.session_id, history.messages)
+                await save_messages(body.session_id, history.messages)
 
         yield "data: [DONE]\n\n"
 
@@ -169,9 +169,9 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
 
 
 @router.post("/session/start")
-def start_session() -> dict[str, str]:
+async def start_session() -> dict[str, str]:
     session_id = str(uuid.uuid4())
-    get_or_create_conversation(session_id)
+    await get_or_create_conversation(session_id)
     return {
         "session_id": session_id,
         "message": "Welcome to our store! How can I help you find the perfect product today?"
@@ -179,8 +179,8 @@ def start_session() -> dict[str, str]:
 
 
 @router.get("/conversation/{session_id}")
-def get_conversation(session_id: str):
-    messages = load_messages(session_id)
+async def get_conversation(session_id: str):
+    messages = await load_messages(session_id)
     if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -197,27 +197,27 @@ def get_conversation(session_id: str):
 
 
 @router.delete("/conversation/{session_id}")
-def delete_conversation(session_id: str):
+async def delete_conversation(session_id: str):
     r = _get_redis()
-    deleted = r.delete(f"conversation:{session_id}")
+    deleted = await r.delete(f"conversation:{session_id}")
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"message": "Conversation deleted"}
 
 
 @router.get("/conversations")
-def list_conversations():
+async def list_conversations():
     r = _get_redis()
-    keys = r.keys("conversation:*")
-    return {
-        "conversations": [
-            {
-                "session_id": key.split(":", 1)[1],
-                "message_count": len(load_messages(key.split(":", 1)[1])) // 2,
-            }
-            for key in keys
-        ]
-    }
+    keys = await r.keys("conversation:*")
+    conversations = []
+    for key in keys:
+        session_id = key.split(":", 1)[1]
+        messages = await load_messages(session_id)
+        conversations.append({
+            "session_id": session_id,
+            "message_count": len(messages) // 2,
+        })
+    return {"conversations": conversations}
 
 @router.post("/feedback")
 def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:

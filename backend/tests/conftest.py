@@ -10,8 +10,11 @@ import pytest
 
 @pytest.fixture
 def mock_es(mocker):
-    """A mocked Elasticsearch client, patched into search.get_es()."""
-    es = mocker.MagicMock()
+    """A mocked AsyncElasticsearch client, patched into search.get_es().
+    Use mocker.AsyncMock(), not MagicMock() — search.py awaits es.search(),
+    es.indices.exists(), etc., so their return values must be awaitable.
+    """
+    es = mocker.AsyncMock()
     mocker.patch("search.get_es", return_value=es)
     return es
 
@@ -34,8 +37,25 @@ def mock_embedding_model(mocker):
 
 @pytest.fixture
 def mock_redis_binary(mocker):
-    """A mocked binary Redis client, patched into cache._get_redis_binary()."""
+    """A mocked binary Redis client, patched into cache._get_redis_binary().
+    r.ft(index) is a sync factory call (like r.pipeline()) — only the
+    methods on its return value (.info() / .search() / .create_index())
+    are actually awaited by cache.py, so those are AsyncMock while r.ft
+    itself and r.pipeline() stay sync-returning MagicMocks. Using a plain
+    AsyncMock for r would auto-spec r.ft itself as async too, breaking the
+    chained r.ft(...).info() call shape.
+    """
     r = mocker.MagicMock()
+    ft_client = mocker.MagicMock()
+    ft_client.info = mocker.AsyncMock()
+    ft_client.search = mocker.AsyncMock()
+    ft_client.create_index = mocker.AsyncMock()
+    r.ft = mocker.MagicMock(return_value=ft_client)
+
+    pipe = mocker.MagicMock()
+    pipe.execute = mocker.AsyncMock()
+    r.pipeline = mocker.MagicMock(return_value=pipe)
+
     mocker.patch("cache._get_redis_binary", return_value=r)
     return r
 
@@ -43,7 +63,7 @@ def mock_redis_binary(mocker):
 @pytest.fixture
 def mock_redis(mocker):
     """A mocked string Redis client, patched into cache._get_redis()."""
-    r = mocker.MagicMock()
+    r = mocker.AsyncMock()
     mocker.patch("cache._get_redis", return_value=r)
     return r
 
@@ -54,7 +74,7 @@ def mock_conversations_redis(mocker):
     _get_redis directly (`from cache import _get_redis`) and so has its
     own module-level binding that patching cache._get_redis won't reach.
     """
-    r = mocker.MagicMock()
+    r = mocker.AsyncMock()
     mocker.patch("conversations._get_redis", return_value=r)
     return r
 

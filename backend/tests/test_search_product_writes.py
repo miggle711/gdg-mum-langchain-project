@@ -1,18 +1,22 @@
 from search import build_product_embedding, es_delete_document, es_upsert_document
 
 
-def test_es_upsert_document_indexes_with_doc_id(mock_es):
+async def test_es_upsert_document_indexes_with_doc_id(mock_es):
     doc = {"id": "p1", "name": "Widget", "price": 9.99}
 
-    es_upsert_document(doc)
+    await es_upsert_document(doc)
 
     mock_es.index.assert_called_once_with(index="products", id="p1", document=doc)
 
 
-def test_es_delete_document_ignores_404(mock_es):
-    mock_scoped_client = mock_es.options.return_value
+async def test_es_delete_document_ignores_404(mocker, mock_es):
+    # es.options(...) is a sync config-wrapper call, not I/O — only the
+    # .delete(...) on its result is actually awaited by es_delete_document.
+    mock_scoped_client = mocker.MagicMock()
+    mock_scoped_client.delete = mocker.AsyncMock()
+    mock_es.options = mocker.MagicMock(return_value=mock_scoped_client)
 
-    es_delete_document("p1")
+    await es_delete_document("p1")
 
     mock_es.options.assert_called_once_with(ignore_status=404)
     mock_scoped_client.delete.assert_called_once_with(index="products", id="p1")

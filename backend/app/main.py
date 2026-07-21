@@ -1,8 +1,9 @@
 import sys
 import logging
 import os
-import time
+import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -29,8 +30,20 @@ from app.routes.health import router as health_router
 from app.routes.cart import router as cart_router
 from app.routes.products import router as products_router
 
+# Postgres migrations must run before the app starts serving, and
+# run_migrations() must stay sync (Alembic drives its own event loop
+# internally — see db.py's docstring), so it runs here at import time,
+# before uvicorn's event loop exists.
+run_migrations()
+# Data seeding (Postgres and Elasticsearch) is manual — see
+# scripts/seed_postgres.py and scripts/seed_elasticsearch.py. Only index/
+# schema creation happens automatically at boot, since ES seeding now
+# reads from Postgres and can't safely run as a fast, no-dependency
+# startup step the way the old HF-dataset-direct seed_products_if_empty()
+# could (see #51's discussion for why this isn't wired into startup).
 
-def _init_with_retry(name: str, init_fn, attempts: int = 3, backoff_seconds: float = 2.0) -> None:
+
+async def _init_with_retry(name: str, init_fn, attempts: int = 3, backoff_seconds: float = 2.0) -> None:
     """Search/cache infra (ES, Redis) is a soft dependency at startup: only
     search functionality needs it, and both already degrade gracefully at
     request time (see #49's partial-failure policy). Retries a few times in
@@ -40,7 +53,7 @@ def _init_with_retry(name: str, init_fn, attempts: int = 3, backoff_seconds: flo
     """
     for attempt in range(1, attempts + 1):
         try:
-            init_fn()
+            await init_fn()
             return
         except Exception as e:
             if attempt == attempts:
@@ -53,22 +66,22 @@ def _init_with_retry(name: str, init_fn, attempts: int = 3, backoff_seconds: flo
                     "%s failed (attempt %d/%d), retrying in %.0fs: %s",
                     name, attempt, attempts, backoff_seconds, e,
                 )
-                time.sleep(backoff_seconds)
+                await asyncio.sleep(backoff_seconds)
 
 
-_init_with_retry("Elasticsearch products index init", init_es_index)
-_init_with_retry("Elasticsearch reviews index init", init_reviews_index)
-_init_with_retry("Redis cache index init", init_cache_index)
-_init_with_retry("Redis review cache index init", init_review_cache_index)
-run_migrations()
-# Data seeding (Postgres and Elasticsearch) is manual — see
-# scripts/seed_postgres.py and scripts/seed_elasticsearch.py. Only index/
-# schema creation happens automatically at boot, since ES seeding now
-# reads from Postgres and can't safely run as a fast, no-dependency
-# startup step the way the old HF-dataset-direct seed_products_if_empty()
-# could (see #51's discussion for why this isn't wired into startup).
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Runs on uvicorn's actual event loop (unlike a module-level
+    # asyncio.run() call, which would create connections bound to a
+    # throwaway loop that closes before the app starts serving requests).
+    await _init_with_retry("Elasticsearch products index init", init_es_index)
+    await _init_with_retry("Elasticsearch reviews index init", init_reviews_index)
+    await _init_with_retry("Redis cache index init", init_cache_index)
+    await _init_with_retry("Redis review cache index init", init_review_cache_index)
+    yield
 
-app = FastAPI(title="LangChain Conversation API")
+
+app = FastAPI(title="LangChain Conversation API", lifespan=lifespan)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

@@ -1,7 +1,7 @@
 import json
 import logging
 import struct
-import redis
+import redis.asyncio as redis
 from redis.commands.search.field import VectorField, TextField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
@@ -51,17 +51,17 @@ def _embedding_to_bytes(embedding: List[float]) -> bytes:
     return struct.pack(f"{len(embedding)}f", *embedding)
 
 
-def init_cache_index() -> None:
+async def init_cache_index() -> None:
     r = _get_redis_binary()
     try:
-        r.ft(CACHE_INDEX).info()
+        await r.ft(CACHE_INDEX).info()
         logger.info("Redis cache vector index '%s' already exists.", CACHE_INDEX)
         return
     except Exception:
         pass
 
     logger.info("Creating Redis cache vector index '%s'...", CACHE_INDEX)
-    r.ft(CACHE_INDEX).create_index(
+    await r.ft(CACHE_INDEX).create_index(
         fields=[
             VectorField(
                 "embedding",
@@ -75,17 +75,17 @@ def init_cache_index() -> None:
     logger.info("Redis cache vector index created.")
 
 
-def init_review_cache_index() -> None:
+async def init_review_cache_index() -> None:
     r = _get_redis_binary()
     try:
-        r.ft(REVIEW_CACHE_INDEX).info()
+        await r.ft(REVIEW_CACHE_INDEX).info()
         logger.info("Redis cache vector index '%s' already exists.", REVIEW_CACHE_INDEX)
         return
     except Exception:
         pass
 
     logger.info("Creating Redis cache vector index '%s'...", REVIEW_CACHE_INDEX)
-    r.ft(REVIEW_CACHE_INDEX).create_index(
+    await r.ft(REVIEW_CACHE_INDEX).create_index(
         fields=[
             VectorField(
                 "embedding",
@@ -99,7 +99,7 @@ def init_review_cache_index() -> None:
     logger.info("Redis cache vector index created.")
 
 
-def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
+async def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
     r = _get_redis_binary()
     query_bytes = _embedding_to_bytes(query_embedding)
     threshold = 1.0 - SEARCH_CACHE_SIMILARITY_THRESHOLD
@@ -110,7 +110,7 @@ def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, A
         .return_fields("score", "results")
         .dialect(2)
     )
-    results = r.ft(CACHE_INDEX).search(q, query_params={"vec": query_bytes})
+    results = await r.ft(CACHE_INDEX).search(q, query_params={"vec": query_bytes})
 
     if not results.docs:
         return None
@@ -124,7 +124,7 @@ def get_cached_search(query_embedding: List[float]) -> Optional[List[Dict[str, A
     return json.loads(doc.results)
 
 
-def set_cached_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
+async def set_cached_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
     r = _get_redis_binary()
     key = f"{CACHE_PREFIX}{abs(hash(query_text))}"
     pipe = r.pipeline()
@@ -133,11 +133,11 @@ def set_cached_search(query_text: str, query_embedding: List[float], results: Li
         "results": json.dumps(results),
     })
     pipe.expire(key, SEARCH_CACHE_TTL_SECONDS)
-    pipe.execute()
+    await pipe.execute()
     logger.info("Search result cached under key=%s (TTL=%ds)", key, SEARCH_CACHE_TTL_SECONDS)
 
 
-def get_cached_review_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
+async def get_cached_review_search(query_embedding: List[float]) -> Optional[List[Dict[str, Any]]]:
     r = _get_redis_binary()
     query_bytes = _embedding_to_bytes(query_embedding)
     threshold = 1.0 - SEARCH_CACHE_SIMILARITY_THRESHOLD
@@ -148,7 +148,7 @@ def get_cached_review_search(query_embedding: List[float]) -> Optional[List[Dict
         .return_fields("score", "results")
         .dialect(2)
     )
-    results = r.ft(REVIEW_CACHE_INDEX).search(q, query_params={"vec": query_bytes})
+    results = await r.ft(REVIEW_CACHE_INDEX).search(q, query_params={"vec": query_bytes})
 
     if not results.docs:
         return None
@@ -162,7 +162,7 @@ def get_cached_review_search(query_embedding: List[float]) -> Optional[List[Dict
     return json.loads(doc.results)
 
 
-def set_cached_review_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
+async def set_cached_review_search(query_text: str, query_embedding: List[float], results: List[Dict[str, Any]]) -> None:
     r = _get_redis_binary()
     key = f"{REVIEW_CACHE_PREFIX}{abs(hash(query_text))}"
     pipe = r.pipeline()
@@ -171,5 +171,5 @@ def set_cached_review_search(query_text: str, query_embedding: List[float], resu
         "results": json.dumps(results),
     })
     pipe.expire(key, SEARCH_CACHE_TTL_SECONDS)
-    pipe.execute()
+    await pipe.execute()
     logger.info("Review search result cached under key=%s (TTL=%ds)", key, SEARCH_CACHE_TTL_SECONDS)

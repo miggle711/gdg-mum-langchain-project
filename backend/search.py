@@ -1,7 +1,7 @@
 import logging
 import time
 from typing import List, Dict, Any, Optional
-from elasticsearch import Elasticsearch
+from elasticsearch import AsyncElasticsearch
 from app.config import settings
 from app.metrics import search_cache_hits, search_cache_misses, rerank_latency, es_search_latency
 
@@ -14,15 +14,15 @@ EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 EMBEDDING_DIM = 768
 
-_es: Optional[Elasticsearch] = None
+_es: Optional[AsyncElasticsearch] = None
 _reranker = None
 _embedding_model = None
 
 
-def get_es() -> Elasticsearch:
+def get_es() -> AsyncElasticsearch:
     global _es
     if _es is None:
-        _es = Elasticsearch(ELASTICSEARCH_URL)
+        _es = AsyncElasticsearch(ELASTICSEARCH_URL)
     return _es
 
 
@@ -46,13 +46,13 @@ def get_embedding_model():
     return _embedding_model
 
 
-def init_es_index() -> None:
+async def init_es_index() -> None:
     es = get_es()
-    if es.indices.exists(index=ES_INDEX):
+    if await es.indices.exists(index=ES_INDEX):
         logger.info("Elasticsearch index '%s' already exists, skipping creation.", ES_INDEX)
         return
     logger.info("Creating Elasticsearch index '%s'...", ES_INDEX)
-    es.indices.create(index=ES_INDEX, body={
+    await es.indices.create(index=ES_INDEX, body={
         "mappings": {
             "properties": {
                 "id":             {"type": "keyword"},
@@ -70,13 +70,13 @@ def init_es_index() -> None:
     })
 
 
-def init_reviews_index() -> None:
+async def init_reviews_index() -> None:
     es = get_es()
-    if es.indices.exists(index=REVIEWS_ES_INDEX):
+    if await es.indices.exists(index=REVIEWS_ES_INDEX):
         logger.info("Elasticsearch index '%s' already exists, skipping creation.", REVIEWS_ES_INDEX)
         return
     logger.info("Creating Elasticsearch index '%s'...", REVIEWS_ES_INDEX)
-    es.indices.create(index=REVIEWS_ES_INDEX, body={
+    await es.indices.create(index=REVIEWS_ES_INDEX, body={
         "mappings": {
             "properties": {
                 "id":                {"type": "keyword"},
@@ -93,46 +93,46 @@ def init_reviews_index() -> None:
     })
 
 
-def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
-    from elasticsearch.helpers import bulk
+async def es_bulk_index(documents: List[Dict[str, Any]]) -> None:
+    from elasticsearch.helpers import async_bulk
     es = get_es()
     logger.info("Bulk indexing %d documents into ES index '%s'...", len(documents), ES_INDEX)
 
-    def _actions():
+    async def _actions():
         for doc in documents:
             yield {"_index": ES_INDEX, "_id": doc["id"], "_source": doc}
 
-    bulk(es, _actions())
+    await async_bulk(es, _actions())
     logger.info("Bulk indexing complete.")
 
 
-def es_bulk_index_reviews(documents: List[Dict[str, Any]]) -> None:
-    from elasticsearch.helpers import bulk
+async def es_bulk_index_reviews(documents: List[Dict[str, Any]]) -> None:
+    from elasticsearch.helpers import async_bulk
     es = get_es()
     logger.info("Bulk indexing %d documents into ES index '%s'...", len(documents), REVIEWS_ES_INDEX)
 
-    def _actions():
+    async def _actions():
         for doc in documents:
             yield {"_index": REVIEWS_ES_INDEX, "_id": doc["id"], "_source": doc}
 
-    bulk(es, _actions())
+    await async_bulk(es, _actions())
     logger.info("Bulk indexing complete.")
 
 
-def es_upsert_document(doc: Dict[str, Any]) -> None:
+async def es_upsert_document(doc: Dict[str, Any]) -> None:
     """Index (create or fully replace) a single product document. Used by
     the product write routes to keep ES in sync with Postgres without a
     CDC pipeline called in the same request as the Postgres
     write, after the Postgres commit succeeds."""
     es = get_es()
-    es.index(index=ES_INDEX, id=doc["id"], document=doc)
+    await es.index(index=ES_INDEX, id=doc["id"], document=doc)
 
 
-def es_delete_document(product_id: str) -> None:
+async def es_delete_document(product_id: str) -> None:
     """Delete a single product document. Safe/no-op if it doesn't exist
     (e.g. never synced, or a retry after a partial failure)."""
     es = get_es()
-    es.options(ignore_status=404).delete(index=ES_INDEX, id=product_id)
+    await es.options(ignore_status=404).delete(index=ES_INDEX, id=product_id)
 
 
 def build_product_embedding(name: str, description: Optional[str]) -> List[float]:
@@ -149,7 +149,7 @@ def build_review_embedding(title: Optional[str], text: Optional[str]) -> List[fl
     return get_embedding_model().encode(combined, normalize_embeddings=True).tolist()
 
 
-def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+async def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     logger.info("query_products called with filters: %s", filters)
     es = get_es()
 
@@ -178,7 +178,7 @@ def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not must_clauses and not filter_clauses:
         query = {"match_all": {}}
 
-    response = es.search(index=ES_INDEX, body={
+    response = await es.search(index=ES_INDEX, body={
         "size": 20,
         "query": query,
         "sort": [{"rating": "desc"}, {"reviews": "desc"}],
@@ -201,9 +201,9 @@ def query_products(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     return results
 
 
-def get_categories() -> List[Dict[str, Any]]:
+async def get_categories() -> List[Dict[str, Any]]:
     es = get_es()
-    response = es.search(index=ES_INDEX, body={
+    response = await es.search(index=ES_INDEX, body={
         "size": 0,
         "aggs": {"categories": {"terms": {"field": "category", "size": 50}}},
     })
@@ -211,11 +211,11 @@ def get_categories() -> List[Dict[str, Any]]:
     return [{"name": b["key"], "icon": "📦"} for b in buckets]
 
 
-def semantic_search(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+async def semantic_search(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
     from cache import get_cached_search, set_cached_search
     logger.info("semantic_search called: query='%s', limit=%d", query_text, limit)
 
-    cached = get_cached_search(query_embedding)
+    cached = await get_cached_search(query_embedding)
     if cached is not None:
         search_cache_hits.inc()
         return cached[:limit]
@@ -225,7 +225,7 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     candidates_size = max(20, limit * 4)
 
     t0 = time.perf_counter()
-    response = es.search(index=ES_INDEX, body={
+    response = await es.search(index=ES_INDEX, body={
         "size": candidates_size,
         "query": {
             "bool": {
@@ -287,12 +287,12 @@ def semantic_search(query_text: str, query_embedding: List[float], limit: int = 
     for r in results:
         del r["description"]
 
-    set_cached_search(query_text, query_embedding, results)
+    await set_cached_search(query_text, query_embedding, results)
     logger.info("semantic_search returned %d results after reranking", len(results))
     return results
 
 
-def semantic_search_reviews(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+async def semantic_search_reviews(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
     """Same hybrid BM25+kNN+rerank shape as semantic_search, targeting the
     reviews index and its own (separate) Redis cache namespace — see
     cache.py's get/set_cached_review_search for why this doesn't share
@@ -300,7 +300,7 @@ def semantic_search_reviews(query_text: str, query_embedding: List[float], limit
     from cache import get_cached_review_search, set_cached_review_search
     logger.info("semantic_search_reviews called: query='%s', limit=%d", query_text, limit)
 
-    cached = get_cached_review_search(query_embedding)
+    cached = await get_cached_review_search(query_embedding)
     if cached is not None:
         search_cache_hits.inc()
         return cached[:limit]
@@ -310,7 +310,7 @@ def semantic_search_reviews(query_text: str, query_embedding: List[float], limit
     candidates_size = max(20, limit * 4)
 
     t0 = time.perf_counter()
-    response = es.search(index=REVIEWS_ES_INDEX, body={
+    response = await es.search(index=REVIEWS_ES_INDEX, body={
         "size": candidates_size,
         "query": {
             "bool": {
@@ -364,6 +364,6 @@ def semantic_search_reviews(query_text: str, query_embedding: List[float], limit
     candidates.sort(key=lambda x: x["similarity"], reverse=True)
     results = candidates[:limit]
 
-    set_cached_review_search(query_text, query_embedding, results)
+    await set_cached_review_search(query_text, query_embedding, results)
     logger.info("semantic_search_reviews returned %d results after reranking", len(results))
     return results
