@@ -1,6 +1,7 @@
 import sys
 import logging
 import os
+import time
 import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,10 +29,37 @@ from app.routes.health import router as health_router
 from app.routes.cart import router as cart_router
 from app.routes.products import router as products_router
 
-init_es_index()
-init_reviews_index()
-init_cache_index()
-init_review_cache_index()
+
+def _init_with_retry(name: str, init_fn, attempts: int = 3, backoff_seconds: float = 2.0) -> None:
+    """Search/cache infra (ES, Redis) is a soft dependency at startup: only
+    search functionality needs it, and both already degrade gracefully at
+    request time (see #49's partial-failure policy). Retries a few times in
+    case the dependency is still warming up, then logs and moves on rather
+    than crash-looping the whole API over it (#52) — /health reports the
+    live status either way.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            init_fn()
+            return
+        except Exception as e:
+            if attempt == attempts:
+                logger.warning(
+                    "%s failed after %d attempts, continuing without it: %s",
+                    name, attempts, e,
+                )
+            else:
+                logger.warning(
+                    "%s failed (attempt %d/%d), retrying in %.0fs: %s",
+                    name, attempt, attempts, backoff_seconds, e,
+                )
+                time.sleep(backoff_seconds)
+
+
+_init_with_retry("Elasticsearch products index init", init_es_index)
+_init_with_retry("Elasticsearch reviews index init", init_reviews_index)
+_init_with_retry("Redis cache index init", init_cache_index)
+_init_with_retry("Redis review cache index init", init_review_cache_index)
 run_migrations()
 # Data seeding (Postgres and Elasticsearch) is manual — see
 # scripts/seed_postgres.py and scripts/seed_elasticsearch.py. Only index/
