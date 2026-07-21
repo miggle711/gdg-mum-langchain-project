@@ -69,7 +69,7 @@ async def create_product(body: ProductCreateRequest) -> ProductResponse:
         response = _to_response(product)
         try:
             embedding = build_product_embedding(product.name, product.description)
-            es_upsert_document(_to_es_doc(product, embedding))
+            await es_upsert_document(_to_es_doc(product, embedding))
         except Exception:
             logger.exception(
                 "ES sync failed after Postgres commit for new product %s — "
@@ -105,7 +105,7 @@ async def update_product(product_id: str, body: ProductUpdateRequest) -> Product
 
         try:
             embedding = build_product_embedding(product.name, product.description)
-            es_upsert_document(_to_es_doc(product, embedding))
+            await es_upsert_document(_to_es_doc(product, embedding))
         except Exception:
             logger.exception(
                 "ES sync failed after Postgres commit for updated product %s — "
@@ -131,7 +131,7 @@ async def delete_product(product_id: str) -> dict[str, str]:
             await session.commit()
 
         try:
-            es_delete_document(product_id)
+            await es_delete_document(product_id)
         except Exception:
             logger.exception(
                 "ES sync failed after Postgres delete for product %s — "

@@ -11,12 +11,12 @@ def _hit(score=1.0, **source):
     return {"_score": score, "_source": source}
 
 
-def test_cache_hit_skips_es_and_reranker_and_truncates_to_limit(mocker, mock_es, mock_reranker):
+async def test_cache_hit_skips_es_and_reranker_and_truncates_to_limit(mocker, mock_es, mock_reranker):
     cached_results = [{"product_id": f"p{i}"} for i in range(10)]
     mocker.patch("cache.get_cached_review_search", return_value=cached_results)
     set_cached = mocker.patch("cache.set_cached_review_search")
 
-    results = semantic_search_reviews("battery life", [0.1] * 768, limit=3)
+    results = await semantic_search_reviews("battery life", [0.1] * 768, limit=3)
 
     assert results == cached_results[:3]
     mock_es.search.assert_not_called()
@@ -24,13 +24,13 @@ def test_cache_hit_skips_es_and_reranker_and_truncates_to_limit(mocker, mock_es,
     set_cached.assert_not_called()
 
 
-def test_cache_miss_runs_hybrid_query_with_expected_boosts(mocker, mock_es, mock_reranker):
+async def test_cache_miss_runs_hybrid_query_with_expected_boosts(mocker, mock_es, mock_reranker):
     mocker.patch("cache.get_cached_review_search", return_value=None)
     mocker.patch("cache.set_cached_review_search")
     mock_es.search.return_value = _es_response([])
     mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [])
 
-    semantic_search_reviews("battery life", [0.1] * 768, limit=5)
+    await semantic_search_reviews("battery life", [0.1] * 768, limit=5)
 
     call_kwargs = mock_es.search.call_args.kwargs
     assert call_kwargs["index"] == "reviews"
@@ -46,19 +46,19 @@ def test_cache_miss_runs_hybrid_query_with_expected_boosts(mocker, mock_es, mock
     assert body["size"] == max(20, 5 * 4)
 
 
-def test_no_candidates_returns_empty_without_reranking(mocker, mock_es, mock_reranker):
+async def test_no_candidates_returns_empty_without_reranking(mocker, mock_es, mock_reranker):
     mocker.patch("cache.get_cached_review_search", return_value=None)
     set_cached = mocker.patch("cache.set_cached_review_search")
     mock_es.search.return_value = _es_response([])
 
-    results = semantic_search_reviews("battery life", [0.1] * 768, limit=5)
+    results = await semantic_search_reviews("battery life", [0.1] * 768, limit=5)
 
     assert results == []
     mock_reranker.predict.assert_not_called()
     set_cached.assert_not_called()
 
 
-def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, mock_reranker):
+async def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, mock_reranker):
     mocker.patch("cache.get_cached_review_search", return_value=None)
     set_cached = mocker.patch("cache.set_cached_review_search")
     mock_es.search.return_value = _es_response([
@@ -68,7 +68,7 @@ def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, moc
     # reranker scores the first candidate lower than the second, despite ES order
     mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.2, 0.9])
 
-    results = semantic_search_reviews("query", [0.1] * 768, limit=1)
+    results = await semantic_search_reviews("query", [0.1] * 768, limit=1)
 
     assert len(results) == 1
     assert results[0]["product_id"] == "p2"
@@ -77,7 +77,7 @@ def test_candidates_are_reranked_sorted_and_capped_to_limit(mocker, mock_es, moc
     set_cached.assert_called_once()
 
 
-def test_reranker_receives_query_paired_with_title_and_text(mocker, mock_es, mock_reranker):
+async def test_reranker_receives_query_paired_with_title_and_text(mocker, mock_es, mock_reranker):
     mocker.patch("cache.get_cached_review_search", return_value=None)
     mocker.patch("cache.set_cached_review_search")
     mock_es.search.return_value = _es_response([
@@ -85,13 +85,13 @@ def test_reranker_receives_query_paired_with_title_and_text(mocker, mock_es, moc
     ])
     mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.5])
 
-    semantic_search_reviews("battery life", [0.1] * 768, limit=5)
+    await semantic_search_reviews("battery life", [0.1] * 768, limit=5)
 
     pairs = mock_reranker.predict.call_args.args[0]
     assert pairs == [("battery life", "Great battery. Lasts all day")]
 
 
-def test_reranker_predict_uses_sigmoid_activation(mocker, mock_es, mock_reranker):
+async def test_reranker_predict_uses_sigmoid_activation(mocker, mock_es, mock_reranker):
     # torch.sigmoid squashes the cross-encoder's raw (unbounded) logits into
     # (0, 1) so "similarity" is a meaningful percentage rather than
     # something like "331%" or "-1036%" (#71).
@@ -102,6 +102,6 @@ def test_reranker_predict_uses_sigmoid_activation(mocker, mock_es, mock_reranker
     ])
     mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.5])
 
-    semantic_search_reviews("battery life", [0.1] * 768, limit=5)
+    await semantic_search_reviews("battery life", [0.1] * 768, limit=5)
 
     assert mock_reranker.predict.call_args.kwargs["activation_fct"] is torch.sigmoid

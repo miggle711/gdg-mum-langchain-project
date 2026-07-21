@@ -16,16 +16,17 @@ def _fake_span():
 
 
 @pytest.fixture
-def chat_test_app(mocker, mock_es, mock_redis_binary):
-    # Satisfy startup checks so the FastAPI app can import without needing a real
-    # Elasticsearch index or Redis search backend. ES/Redis data seeding is
-    # manual (#51) — only index/schema creation runs at import time, so no
-    # es.count() mock is needed here anymore.
-    mock_es.indices.exists.return_value = True
-    mock_redis_binary.ft.return_value.info.return_value = {}
-    # run_migrations() (Postgres Phase 1) also runs at import time and would
-    # otherwise try to connect to a real database — no-op it here since this
-    # test suite only cares about the chat route -> LangGraph wiring.
+def chat_test_app(mocker):
+    # ES/Redis index init now runs inside app.main's lifespan context
+    # manager (needed so the async clients bind to uvicorn's actual event
+    # loop rather than a throwaway one — see #41), which httpx.ASGITransport
+    # does not trigger by default, so no ES/Redis mocking is needed here
+    # for the app to import cleanly.
+    #
+    # run_migrations() (Postgres Phase 1) still runs at plain import time
+    # (it must stay sync — see db.py's docstring) and would otherwise try
+    # to connect to a real database — no-op it here since this test suite
+    # only cares about the chat route -> LangGraph wiring.
     mocker.patch("db.run_migrations")
 
     # Force a fresh import for each test so route-level patches apply against a

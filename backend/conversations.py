@@ -10,17 +10,17 @@ logger = logging.getLogger(__name__)
 CONVERSATION_TTL_SECONDS = settings.conversation_ttl_seconds
 
 
-def save_messages(session_id: str, messages: List[BaseMessage]) -> None:
+async def save_messages(session_id: str, messages: List[BaseMessage]) -> None:
     r = _get_redis()
     key = f"conversation:{session_id}"
-    r.set(key, json.dumps(messages_to_dict(messages)), ex=CONVERSATION_TTL_SECONDS)
+    await r.set(key, json.dumps(messages_to_dict(messages)), ex=CONVERSATION_TTL_SECONDS)
     logger.info("Saved %d messages for conversation '%s'", len(messages), session_id)
 
 
-def load_messages(session_id: str) -> List[BaseMessage]:
+async def load_messages(session_id: str) -> List[BaseMessage]:
     r = _get_redis()
     key = f"conversation:{session_id}"
-    data = r.get(key)
+    data = await r.get(key)
     if data is None:
         logger.info("No session found in Redis for conversation '%s', starting fresh.", session_id)
         return []
@@ -29,19 +29,19 @@ def load_messages(session_id: str) -> List[BaseMessage]:
     return messages
 
 
-def save_summary(session_id: str, summary: str) -> None:
+async def save_summary(session_id: str, summary: str) -> None:
     r = _get_redis()
-    r.set(f"conversation:{session_id}:summary", summary, ex=CONVERSATION_TTL_SECONDS)
+    await r.set(f"conversation:{session_id}:summary", summary, ex=CONVERSATION_TTL_SECONDS)
 
 
-def load_summary(session_id: str) -> Optional[str]:
+async def load_summary(session_id: str) -> Optional[str]:
     r = _get_redis()
-    return r.get(f"conversation:{session_id}:summary")
+    return await r.get(f"conversation:{session_id}:summary")
 
 
-def maybe_summarise(session_id: str, messages: List[BaseMessage], llm) -> tuple[Optional[str], List[BaseMessage]]:
+async def maybe_summarise(session_id: str, messages: List[BaseMessage], llm) -> tuple[Optional[str], List[BaseMessage]]:
     threshold = settings.conversation_summary_threshold
-    existing_summary = load_summary(session_id)
+    existing_summary = await load_summary(session_id)
 
     if len(messages) < threshold:
         return existing_summary, messages
@@ -68,10 +68,11 @@ def maybe_summarise(session_id: str, messages: List[BaseMessage], llm) -> tuple[
         f"Write from the assistant's perspective.\n\n{history_text}"
     )
 
-    summary = llm.invoke(prompt).content
+    response = await llm.ainvoke(prompt)
+    summary = response.content
     logger.info("Summary generated for conversation '%s': %s", session_id, summary[:80])
 
-    save_summary(session_id, summary)
-    save_messages(session_id, recent)
+    await save_summary(session_id, summary)
+    await save_messages(session_id, recent)
 
     return summary, recent

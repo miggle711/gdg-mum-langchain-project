@@ -20,12 +20,12 @@ class HealthResponse(BaseModel):
 
 
 @router.get("/health", response_model=HealthResponse)
-def health_check():
+async def health_check():
     services = {}
 
     # Elasticsearch
     try:
-        info = get_es().cluster.health()
+        info = await get_es().cluster.health()
         es_status = info.get("status", "unknown")
         services["elasticsearch"] = ServiceStatus(status="ok", detail=es_status)
     except Exception as e:
@@ -34,7 +34,7 @@ def health_check():
 
     # Redis
     try:
-        _get_redis().ping()
+        await _get_redis().ping()
         services["redis"] = ServiceStatus(status="ok")
     except Exception as e:
         logger.warning("Health check: Redis unavailable: %s", e)

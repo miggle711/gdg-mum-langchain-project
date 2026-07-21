@@ -23,7 +23,7 @@ class SearchReviewsInput(BaseModel):
     limit: Optional[int] = Field(5, description="Number of review results to return")
 
 
-def query_products_impl(
+async def query_products_impl(
     search: Optional[str] = None,
     category: Optional[str] = None,
     price_min: Optional[float] = None,
@@ -43,7 +43,7 @@ def query_products_impl(
         filters["rating_min"] = rating_min
 
     try:
-        results = query_products(filters)
+        results = await query_products(filters)
 
         if not results:
             return json.dumps({"results": [], "message": "No products found matching the criteria"})
@@ -65,12 +65,12 @@ def query_products_impl(
         return json.dumps({"error": str(e), "results": []})
 
 
-def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
+async def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
     try:
         # BGE models perform better with this instruction prefix for retrieval queries
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
         embedding = search.get_embedding_model().encode(prefixed_query, normalize_embeddings=True).tolist()
-        results = semantic_search(query, embedding, limit=limit or 5)
+        results = await semantic_search(query, embedding, limit=limit or 5)
 
         if not results:
             return json.dumps({"results": [], "message": "No similar products found"})
@@ -93,11 +93,11 @@ def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
         return json.dumps({"error": str(e), "results": []})
 
 
-def search_reviews_impl(query: str, limit: Optional[int] = 5) -> str:
+async def search_reviews_impl(query: str, limit: Optional[int] = 5) -> str:
     try:
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
         embedding = search.get_embedding_model().encode(prefixed_query, normalize_embeddings=True).tolist()
-        results = semantic_search_reviews(query, embedding, limit=limit or 5)
+        results = await semantic_search_reviews(query, embedding, limit=limit or 5)
 
         if not results:
             return json.dumps({"results": [], "message": "No matching reviews found"})
@@ -118,9 +118,9 @@ def search_reviews_impl(query: str, limit: Optional[int] = 5) -> str:
         return json.dumps({"error": str(e), "results": []})
 
 
-def list_categories_impl() -> str:
+async def list_categories_impl() -> str:
     try:
-        categories = get_categories()
+        categories = await get_categories()
         return json.dumps({
             "categories": [{"name": c["name"], "icon": c["icon"]} for c in categories],
         })
@@ -131,7 +131,7 @@ def list_categories_impl() -> str:
 PRODUCT_TOOLS = [
     StructuredTool(
         name="semantic_search",
-        func=semantic_search_impl,
+        coroutine=semantic_search_impl,
         args_schema=SemanticSearchInput,
         description=(
             "Search products using natural language. Use this for vague or descriptive queries "
@@ -141,7 +141,7 @@ PRODUCT_TOOLS = [
     ),
     StructuredTool(
         name="query_products",
-        func=query_products_impl,
+        coroutine=query_products_impl,
         args_schema=QueryProductsInput,
         description=(
             "Search and filter products by exact criteria: keyword, category, price range, or rating. "
@@ -149,13 +149,13 @@ PRODUCT_TOOLS = [
         ),
     ),
     StructuredTool.from_function(
-        func=list_categories_impl,
+        coroutine=list_categories_impl,
         name="list_categories",
         description="List all available product categories.",
     ),
     StructuredTool(
         name="search_reviews",
-        func=search_reviews_impl,
+        coroutine=search_reviews_impl,
         args_schema=SearchReviewsInput,
         description=(
             "Search customer review text for opinions and experiences, not for finding products "
