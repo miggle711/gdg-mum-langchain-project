@@ -24,6 +24,7 @@ class GraphState(TypedDict, total=False):
     session_id: str
     intent: Intent
     response: str
+    error: bool
 
 
 class IntentClassification(BaseModel):
@@ -100,10 +101,15 @@ async def classify_intent(state: GraphState, config: RunnableConfig | None = Non
             span.update(
                 level="ERROR",
                 status_message=str(exc),
-                output={"intent": "clarify"},
+                output={"intent": "clarify", "error": True},
             )
-            logger.exception("Intent classification failed; falling back to clarify")
-            return {"intent": "clarify"}
+            logger.exception("Intent classification failed")
+            # Routes to clarify_node like a genuine ambiguous-message case
+            # (#57 will give this its own dedicated error path), but error=True
+            # lets callers (app/routes/chat.py) tell a real failure apart from
+            # an ordinary clarify response instead of the two looking
+            # identical to the caller (#77).
+            return {"intent": "clarify", "error": True}
 
         intent = getattr(result, "intent", "clarify")
         if intent not in ALLOWED_INTENTS:

@@ -79,8 +79,16 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
                 output={
                     "intent": result.get("intent"),
                     "response": response_text,
+                    "error": result.get("error", False),
                 }
             )
+
+        if result.get("error"):
+            # Intent classification failed (e.g. quota exhaustion, timeout) —
+            # surface this as a real failure instead of returning a 200 with
+            # clarify_node's placeholder text indistinguishable from a
+            # genuine successful reply (#77).
+            raise HTTPException(status_code=502, detail="Failed to process message, please try again.")
 
         history.add_user_message(body.message)
         history.add_ai_message(response_text)
@@ -92,6 +100,8 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             message_count=len(history.messages) // 2,
             trace_id=trace_id,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Exception in chat: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -143,15 +153,23 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
                     config={"callbacks": [stream_handler]},
                 )
                 response_text = result["response"]
-                full_response = response_text
 
                 span.update(
                     output={
                         "intent": result.get("intent"),
                         "response": response_text,
+                        "error": result.get("error", False),
                     }
                 )
 
+                if result.get("error"):
+                    # Same rationale as /chat (#77): don't stream back
+                    # clarify_node's placeholder text as if it were a normal
+                    # successful reply when classification actually failed.
+                    yield f"data: {json.dumps({'error': 'Failed to process message, please try again.'})}\n\n"
+                    return
+
+                full_response = response_text
                 yield f"data: {json.dumps({'text': response_text})}\n\n"
                 await asyncio.sleep(0)
         except Exception as e:
