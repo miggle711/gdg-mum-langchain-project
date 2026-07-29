@@ -9,7 +9,7 @@ const SESSION_ID_STORAGE_KEY = 'session_id';
   providedIn: 'root',
 })
 export class Session {
-  private apiUrl = 'http://localhost:8000';
+  private apiUrl = '/api';
 
   constructor(private http: HttpClient) {}
 
