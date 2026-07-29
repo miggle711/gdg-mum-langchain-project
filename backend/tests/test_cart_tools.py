@@ -184,3 +184,30 @@ async def test_get_product_impl_returns_error_for_missing_product(session):
     result = json.loads(await cart_tools.get_product_impl(product_id="nonexistent"))
 
     assert result["error"] == "Product not found"
+
+
+# The tests above call the _impl functions directly, per this file's own
+# docstring — deliberately bypassing StructuredTool.ainvoke(). That gap let a
+# real bug through: session_id was declared as a plain (non-injected)
+# keyword-only argument, which StructuredTool's input validation silently
+# strips before calling the coroutine, since it isn't in args_schema. Calling
+# through the real tool (as app/agent.py's tool-calling loop does) reproduces
+# and guards against that specific failure mode.
+async def test_add_to_cart_tool_ainvoke_receives_injected_session_id(session):
+    await _seed_product(session, product_id="p1", name="Widget", price=9.99)
+
+    tool = next(t for t in cart_tools.CART_TOOLS if t.name == "add_to_cart")
+    result = json.loads(await tool.ainvoke({"product_id": "p1", "quantity": 1, "session_id": "session-1"}))
+
+    assert "error" not in result
+    assert result["items"] == [{"product_id": "p1", "name": "Widget", "quantity": 1}]
+
+
+async def test_view_cart_tool_ainvoke_receives_injected_session_id(session):
+    await _seed_product(session, product_id="p1", name="Widget", price=9.99)
+    await cart_tools.add_to_cart_impl(product_id="p1", quantity=1, session_id="session-1")
+
+    tool = next(t for t in cart_tools.CART_TOOLS if t.name == "view_cart")
+    result = json.loads(await tool.ainvoke({"session_id": "session-1"}))
+
+    assert result["items"] == [{"product_id": "p1", "name": "Widget", "quantity": 1}]
