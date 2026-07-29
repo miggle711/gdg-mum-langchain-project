@@ -1,8 +1,8 @@
 import json
 import logging
+from typing import Annotated
 
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from langchain_core.tools import InjectedToolArg, StructuredTool
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -11,10 +11,6 @@ from models_db import Order, OrderItem, Product
 from session_identity import get_or_create_shadow_user
 
 logger = logging.getLogger(__name__)
-
-
-class ViewOrderHistoryInput(BaseModel):
-    pass
 
 
 async def _order_summary(session, order: Order) -> dict:
@@ -43,7 +39,7 @@ async def _order_summary(session, order: Order) -> dict:
     }
 
 
-async def view_order_history_impl(*, session_id: str) -> str:
+async def view_order_history_impl(*, session_id: Annotated[str, InjectedToolArg]) -> str:
     try:
         async with get_session() as session:
             user = await get_or_create_shadow_user(session, session_id)
@@ -65,10 +61,9 @@ async def view_order_history_impl(*, session_id: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-_view_order_history_tool = StructuredTool(
-    name="view_order_history",
+_view_order_history_tool = StructuredTool.from_function(
     coroutine=view_order_history_impl,
-    args_schema=ViewOrderHistoryInput,
+    name="view_order_history",
     description=(
         "View the customer's past orders: order id, status, order date, line items "
         "(product name, quantity, unit price), and payment status/amount for each. "
@@ -78,6 +73,9 @@ _view_order_history_tool = StructuredTool(
         "use view_cart for that instead."
     ),
 )
+# args_schema inferred from the function signature, not an explicit empty
+# model — see cart_tools.py's _view_cart_tool for why (StructuredTool's
+# zero-fields fast path silently drops the injected session_id otherwise).
 _view_order_history_tool._needs_session_id = True
 
 ORDER_TOOLS = [_view_order_history_tool]

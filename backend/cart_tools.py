@@ -1,7 +1,8 @@
 import json
 import logging
+from typing import Annotated
 
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import InjectedToolArg, StructuredTool
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -15,10 +16,6 @@ logger = logging.getLogger(__name__)
 class AddToCartInput(BaseModel):
     product_id: str = Field(description="The id of the product to add to the cart")
     quantity: int = Field(default=1, description="How many units to add")
-
-
-class ViewCartInput(BaseModel):
-    pass
 
 
 class RemoveFromCartInput(BaseModel):
@@ -60,7 +57,7 @@ async def _cart_summary(session, user_id: int) -> dict:
     return {"items": items, "total": round(total, 2)}
 
 
-async def add_to_cart_impl(product_id: str, quantity: int = 1, *, session_id: str) -> str:
+async def add_to_cart_impl(product_id: str, quantity: int = 1, *, session_id: Annotated[str, InjectedToolArg]) -> str:
     try:
         if quantity <= 0:
             return json.dumps({"error": "Quantity must be a positive number"})
@@ -92,7 +89,7 @@ async def add_to_cart_impl(product_id: str, quantity: int = 1, *, session_id: st
         return json.dumps({"error": str(e)})
 
 
-async def view_cart_impl(*, session_id: str) -> str:
+async def view_cart_impl(*, session_id: Annotated[str, InjectedToolArg]) -> str:
     try:
         async with get_session() as session:
             user = await get_or_create_shadow_user(session, session_id)
@@ -104,7 +101,7 @@ async def view_cart_impl(*, session_id: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-async def remove_from_cart_impl(product_id: str, *, session_id: str) -> str:
+async def remove_from_cart_impl(product_id: str, *, session_id: Annotated[str, InjectedToolArg]) -> str:
     try:
         async with get_session() as session:
             user = await get_or_create_shadow_user(session, session_id)
@@ -129,7 +126,7 @@ async def remove_from_cart_impl(product_id: str, *, session_id: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-async def update_quantity_impl(product_id: str, quantity: int, *, session_id: str) -> str:
+async def update_quantity_impl(product_id: str, quantity: int, *, session_id: Annotated[str, InjectedToolArg]) -> str:
     try:
         if quantity <= 0:
             return json.dumps({"error": "Quantity must be a positive number"})
@@ -190,12 +187,21 @@ _add_to_cart_tool = StructuredTool(
 )
 _add_to_cart_tool._needs_session_id = True
 
-_view_cart_tool = StructuredTool(
-    name="view_cart",
+_view_cart_tool = StructuredTool.from_function(
     coroutine=view_cart_impl,
-    args_schema=ViewCartInput,
+    name="view_cart",
     description="View the current contents and total of the customer's cart. Use when the customer asks what's in their cart.",
 )
+# args_schema is inferred from view_cart_impl's signature (no explicit
+# args_schema=) rather than an empty pydantic model — StructuredTool has a
+# fast path for tools whose args_schema has zero fields that skips input
+# parsing entirely (_to_args_and_kwargs), which would silently drop the
+# injected session_id before it ever reaches _parse_input. An explicit but
+# empty ViewCartInput(BaseModel) hits that same fast path; inferring the
+# schema from the signature does not, since session_id (with its
+# InjectedToolArg annotation) becomes a real field on the inferred model —
+# still correctly excluded from what the LLM sees (tool.args), just not
+# zero fields internally.
 _view_cart_tool._needs_session_id = True
 
 _remove_from_cart_tool = StructuredTool(

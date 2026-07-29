@@ -125,3 +125,17 @@ async def test_view_order_history_impl_handles_missing_payment_gracefully(sessio
 
     assert result["orders"][0]["payment_status"] == "unknown"
     assert result["orders"][0]["amount"] is None
+
+
+# See test_cart_tools.py's equivalent tests for why this one goes through
+# the real StructuredTool.ainvoke() rather than calling the _impl directly:
+# session_id being a plain (non-injected) keyword-only arg was silently
+# stripped by StructuredTool's input validation before this bug's fix.
+async def test_view_order_history_tool_ainvoke_receives_injected_session_id(session):
+    await _seed_order(session, session_id="session-1", product_id="p1", name="Widget")
+
+    tool = order_tools.ORDER_TOOLS[0]
+    result = json.loads(await tool.ainvoke({"session_id": "session-1"}))
+
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["items"][0]["product_id"] == "p1"
