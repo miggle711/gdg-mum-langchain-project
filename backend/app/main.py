@@ -29,6 +29,7 @@ from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
 from app.routes.cart import router as cart_router
 from app.routes.products import router as products_router
+from app.routes.auth import router as auth_router
 
 # Postgres migrations must run before the app starts serving, and
 # run_migrations() must stay sync (Alembic drives its own event loop
@@ -119,6 +120,7 @@ app.include_router(chat_router)
 app.include_router(health_router)
 app.include_router(cart_router)
 app.include_router(products_router)
+app.include_router(auth_router)
 
 Instrumentator().instrument(app).expose(app)
 
