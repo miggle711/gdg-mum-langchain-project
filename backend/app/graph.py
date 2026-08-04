@@ -17,12 +17,19 @@ logger = logging.getLogger(__name__)
 Intent = Literal["product_details", "small_talk", "sensitive_topic", "clarify"]
 ALLOWED_INTENTS = {"product_details", "small_talk", "sensitive_topic", "clarify"}
 
+# New 6-way intent label used by the upcoming extract_intent_and_entities node (#57).
+# Not wired in yet — Intent/ALLOWED_INTENTS above still drive today's classify_intent.
+CartActionType = Literal["add", "remove", "update_quantity"]
+
 
 class GraphState(TypedDict, total=False):
     input: str
     chat_history: list[BaseMessage]
     session_id: str
     intent: Intent
+    product_reference: str
+    quantity: int
+    cart_action_type: CartActionType
     response: str
     error: bool
 
@@ -74,6 +81,78 @@ _intent_llm = ChatGoogleGenerativeAI(
 )
 
 _intent_classifier = _INTENT_CLASSIFIER_PROMPT | _intent_llm.with_structured_output(IntentClassification)
+
+
+# --- New intent+entity extraction (#57) — additive for now, not wired into classify_intent yet ---
+
+class IntentEntityExtraction(BaseModel):
+    intent: Literal[
+        "product_search", "product_details", "cart_action", "clarify", "fallback", "unsafe"
+    ] = Field(description="The best matching intent label for the user's message.")
+    product_reference: str | None = Field(
+        default=None,
+        description=(
+            "A short natural-language description of the product being discussed or acted on "
+            "(e.g. 'the blue waterproof jacket'), resolved using chat history for follow-ups "
+            "like 'that one' or 'the first one'. Only set for product_details and cart_action "
+            "intents; otherwise null."
+        ),
+    )
+    quantity: int | None = Field(
+        default=None,
+        description="The quantity mentioned for a cart action, if any. Only set for cart_action intent.",
+    )
+    cart_action_type: CartActionType | None = Field(
+        default=None,
+        description=(
+            "Which cart operation the user wants: 'add' to add items, 'remove' to remove an "
+            "item entirely, or 'update_quantity' to change an existing item's quantity to a "
+            "new total. Only set for cart_action intent."
+        ),
+    )
+
+
+_INTENT_ENTITY_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """Classify the user's message into exactly one ecommerce routing intent, and extract minimal entities.
+
+Intents:
+- product_search: browsing/discovery - searching, recommendations, comparisons, filtering by category/price/rating.
+- product_details: asking about one specific, already-identified product (attributes, price, availability, follow-up questions about "it").
+- cart_action: adding, removing, or changing the quantity of an item in the cart.
+- clarify: unclear messages that cannot be routed using the current message or chat history.
+- fallback: greetings, thanks, farewells, casual conversation, or anything else unrelated to shopping.
+- unsafe: self-harm, violence, abuse, threats, illegal wrongdoing, or safety-sensitive content.
+
+Rules:
+- Use chat history to resolve follow-ups like "what about one in blue?" or "add that one".
+- For cart_action, also set cart_action_type ('add', 'remove', or 'update_quantity'), product_reference, and quantity if mentioned.
+- For product_details and cart_action, set product_reference to a short description of the product, using chat history to resolve vague references.
+- Prefer unsafe whenever safety risk is present, regardless of any other content in the message.
+- Use clarify only when no other intent clearly fits.
+
+Examples:
+- "Show me waterproof jackets under $100" -> product_search
+- "What about one in blue?" after a search -> product_search
+- "Tell me more about that first one" -> product_details, product_reference="the first jacket shown"
+- "Add 2 of those to my cart" after viewing a product -> cart_action, cart_action_type="add", product_reference="that product", quantity=2
+- "Remove the blue jacket from my cart" -> cart_action, cart_action_type="remove", product_reference="the blue jacket"
+- "Actually make it 3" after adding an item -> cart_action, cart_action_type="update_quantity", product_reference="that item", quantity=3
+- "Hey, how are you?" -> fallback
+- "Thanks, that's all" -> fallback
+- "I want to hurt someone" -> unsafe
+- "asdf qwerty" -> clarify
+
+Return only the requested fields.""",
+        ),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ("human", "{input}"),
+    ]
+)
+
+_intent_entity_extractor = _INTENT_ENTITY_PROMPT | _intent_llm.with_structured_output(IntentEntityExtraction)
 
 langfuse_client = get_client()
 
