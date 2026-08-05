@@ -15,7 +15,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from auth import decode_access_token
+from auth import decode_access_token, extract_bearer_token
 from conversations import save_messages, load_messages, maybe_summarise
 from cache import _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData, FeedbackRequest, FeedbackResponse
@@ -36,11 +36,17 @@ def _conversation_key(request: Request, session_id: str) -> str:
     just to pick a Redis key, and this keeps /chat's guest path exactly as
     dependency-free as it is today (no forced shadow-user DB write per
     anonymous message).
+
+    The authenticated key is prefixed ("user:{id}") rather than being the
+    bare numeric user_id — a guest client could otherwise send
+    session_id="55" and land on the exact same Redis key as user_id=55's
+    authenticated conversation. The prefix makes the two namespaces
+    structurally disjoint regardless of what a guest sends, rather than
+    relying on session_id's UUID shape as an (unenforced) assumption.
     """
-    auth_header = request.headers.get("authorization", "")
-    token = auth_header.removeprefix("Bearer ").strip()
+    token = extract_bearer_token(request.headers.get("authorization"))
     user_id = decode_access_token(token) if token else None
-    return str(user_id) if user_id is not None else session_id
+    return f"user:{user_id}" if user_id is not None else session_id
 
 
 async def get_or_create_conversation(session_id: str) -> ConversationData:
