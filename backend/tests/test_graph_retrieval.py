@@ -95,3 +95,30 @@ async def test_retrieve_data_product_details_product_not_found(mocker):
     result = await graph.retrieve_data({"intent": "product_details", "product_reference": "a deleted item"})
 
     assert json.loads(result["retrieved_data"]) == {"results": [], "count": 0}
+
+
+def test_validate_results_node_is_a_pass_through():
+    import app.graph as graph
+
+    retrieved = json.dumps({"results": [{"id": "p1"}], "count": 1})
+    assert graph.validate_results({"retrieved_data": retrieved}) == {}
+
+
+def test_route_from_validation_routes_to_grounded_response_when_results_present():
+    import app.graph as graph
+
+    retrieved = json.dumps({"results": [{"id": "p1"}], "count": 1})
+    assert graph.route_from_validation({"retrieved_data": retrieved}) == "generate_grounded_response"
+
+
+def test_route_from_validation_routes_to_clarify_when_no_results():
+    import app.graph as graph
+
+    retrieved = json.dumps({"results": [], "count": 0})
+    assert graph.route_from_validation({"retrieved_data": retrieved}) == "clarify_node"
+
+
+def test_route_from_validation_treats_missing_retrieved_data_as_no_results():
+    import app.graph as graph
+
+    assert graph.route_from_validation({}) == "clarify_node"

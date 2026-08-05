@@ -273,6 +273,34 @@ async def retrieve_data(state: GraphState) -> Dict[str, Any]:
         return {"retrieved_data": json.dumps(retrieved)}
 
 
+def validate_results(state: GraphState) -> Dict[str, Any]:
+    """VR (#57): checks whether RD found anything, for route_from_validation
+    to act on. Doesn't change state itself — exists as its own node (rather
+    than folding the check into route_from_validation) so it gets its own
+    trace span, matching the diagram. Not wired into the graph yet.
+    """
+    with _start_graph_span("graph.validate_results", state) as span:
+        retrieved = json.loads(state.get("retrieved_data") or "{}")
+        span.update(output={"count": retrieved.get("count", 0)})
+        return {}
+
+
+def route_from_validation(state: GraphState) -> str:
+    retrieved = json.loads(state.get("retrieved_data") or "{}")
+    has_results = bool(retrieved.get("results"))
+    route = "generate_grounded_response" if has_results else "clarify_node"
+
+    with langfuse_client.start_as_current_span(
+        name="graph.route_from_validation",
+        input={"has_results": has_results},
+        output={"route": route},
+        metadata={"component": "langgraph"},
+    ):
+        pass
+
+    return route
+
+
 def small_talk_node(state: GraphState) -> Dict[str, Any]:
     with _start_graph_span("graph.small_talk_node", state) as span:
         response = "response from graph - small talk node placeholder"
