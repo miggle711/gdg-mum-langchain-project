@@ -16,8 +16,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from auth import decode_access_token, extract_bearer_token
-from conversations import save_messages, load_messages, maybe_summarise
+from conversations import save_messages, load_messages, load_preferences, maybe_summarise
 from cache import _get_redis
+from db import get_session
 from app.models import ChatRequest, ChatResponse, ConversationData, FeedbackRequest, FeedbackResponse
 from app.agent import _llm, langfuse_client
 from app.graph import chat_graph
@@ -26,16 +27,21 @@ from app.limiter import limiter
 router = APIRouter()
 
 
-def _conversation_key(request: Request, session_id: str) -> str:
-    """Keys conversation history by user_id when a valid JWT is present,
-    falling back to session_id for guests (#82) — so a logged-in user's
-    conversation history can't be read/deleted by anyone who guesses or is
-    handed their session_id, since a real user_id can't be forged without
-    the JWT secret. Deliberately does NOT call resolve_user/hit Postgres:
-    a JWT's signature alone proves the user_id claim, no DB lookup needed
-    just to pick a Redis key, and this keeps /chat's guest path exactly as
-    dependency-free as it is today (no forced shadow-user DB write per
-    anonymous message).
+def _authenticated_user_id(request: Request) -> int | None:
+    """Verifies the request's JWT (if any) and returns the claimed user_id,
+    or None for guests/invalid tokens. A JWT's signature alone proves the
+    user_id claim — no DB lookup needed just to know who's asking (#82)."""
+    token = extract_bearer_token(request.headers.get("authorization"))
+    return decode_access_token(token) if token else None
+
+
+def _conversation_key(session_id: str, user_id: int | None) -> str:
+    """Keys conversation history by user_id when authenticated, falling back
+    to session_id for guests (#82) — so a logged-in user's conversation
+    history can't be read/deleted by anyone who guesses or is handed their
+    session_id. Deliberately does NOT hit Postgres itself: this keeps /chat's
+    guest path exactly as dependency-free as it is today (no forced
+    shadow-user DB write per anonymous message).
 
     The authenticated key is prefixed ("user:{id}") rather than being the
     bare numeric user_id — a guest client could otherwise send
@@ -44,8 +50,6 @@ def _conversation_key(request: Request, session_id: str) -> str:
     structurally disjoint regardless of what a guest sends, rather than
     relying on session_id's UUID shape as an (unenforced) assumption.
     """
-    token = extract_bearer_token(request.headers.get("authorization"))
-    user_id = decode_access_token(token) if token else None
     return f"user:{user_id}" if user_id is not None else session_id
 
 
@@ -62,13 +66,26 @@ async def get_or_create_conversation(session_id: str) -> ConversationData:
 @limiter.limit("20/minute")
 async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     try:
-        conversation_key = _conversation_key(request, body.session_id)
+        user_id = _authenticated_user_id(request)
+        conversation_key = _conversation_key(body.session_id, user_id)
         conversation = await get_or_create_conversation(conversation_key)
         history = conversation["history"]
 
-        summary, recent_messages = await maybe_summarise(conversation_key, history.messages, _llm)
-
         chat_history = []
+
+        # Long-term memory (#54): authenticated users only — guests never
+        # touch Postgres on the chat path (#82's guest-path guarantee).
+        if user_id is not None:
+            async with get_session() as pg_session:
+                preferences = await load_preferences(pg_session, user_id)
+                if preferences:
+                    chat_history.append(SystemMessage(content=f"What we know about this customer: {preferences}"))
+                summary, recent_messages = await maybe_summarise(
+                    conversation_key, history.messages, _llm, pg_session=pg_session, user_id=user_id
+                )
+        else:
+            summary, recent_messages = await maybe_summarise(conversation_key, history.messages, _llm)
+
         if summary:
             chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
         chat_history.extend(recent_messages)
@@ -135,13 +152,26 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 @router.post("/chat/stream")
 @limiter.limit("20/minute")
 async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
-    conversation_key = _conversation_key(request, body.session_id)
+    user_id = _authenticated_user_id(request)
+    conversation_key = _conversation_key(body.session_id, user_id)
     conversation = await get_or_create_conversation(conversation_key)
     history = conversation["history"]
 
-    summary, recent_messages = await maybe_summarise(conversation_key, history.messages, _llm)
-
     chat_history = []
+
+    # Long-term memory (#54): authenticated users only — guests never touch
+    # Postgres on the chat path (#82's guest-path guarantee).
+    if user_id is not None:
+        async with get_session() as pg_session:
+            preferences = await load_preferences(pg_session, user_id)
+            if preferences:
+                chat_history.append(SystemMessage(content=f"What we know about this customer: {preferences}"))
+            summary, recent_messages = await maybe_summarise(
+                conversation_key, history.messages, _llm, pg_session=pg_session, user_id=user_id
+            )
+    else:
+        summary, recent_messages = await maybe_summarise(conversation_key, history.messages, _llm)
+
     if summary:
         chat_history.append(SystemMessage(content=f"Summary of earlier conversation: {summary}"))
     chat_history.extend(recent_messages)
@@ -224,7 +254,7 @@ async def start_session() -> dict[str, str]:
 
 @router.get("/conversation/{session_id}")
 async def get_conversation(request: Request, session_id: str):
-    conversation_key = _conversation_key(request, session_id)
+    conversation_key = _conversation_key(session_id, _authenticated_user_id(request))
     messages = await load_messages(conversation_key)
     if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -243,7 +273,7 @@ async def get_conversation(request: Request, session_id: str):
 
 @router.delete("/conversation/{session_id}")
 async def delete_conversation(request: Request, session_id: str):
-    conversation_key = _conversation_key(request, session_id)
+    conversation_key = _conversation_key(session_id, _authenticated_user_id(request))
     r = _get_redis()
     deleted = await r.delete(f"conversation:{conversation_key}")
     if not deleted:
