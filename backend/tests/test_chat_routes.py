@@ -74,7 +74,7 @@ async def test_chat_route_uses_langgraph_and_preserves_response_shape(mocker, ch
     invoke = mocker.patch.object(
         chat_module.chat_graph,
         "ainvoke",
-        AsyncMock(return_value={"intent": "small_talk", "response": "GRAPH_WIRED_SENTINEL"}),
+        AsyncMock(return_value={"intent": "fallback", "response": "GRAPH_WIRED_SENTINEL"}),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -140,7 +140,7 @@ async def test_chat_stream_route_uses_langgraph_and_preserves_sse_contract(mocke
     invoke = mocker.patch.object(
         chat_module.chat_graph,
         "ainvoke",
-        AsyncMock(return_value={"intent": "product_details", "response": "GRAPH_STREAM_SENTINEL"}),
+        AsyncMock(return_value={"intent": "product_search", "response": "GRAPH_STREAM_SENTINEL"}),
     )
 
     transport = httpx.ASGITransport(app=app)

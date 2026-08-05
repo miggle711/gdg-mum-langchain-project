@@ -15,72 +15,98 @@ from langchain_core.messages import HumanMessage
 _HAS_REAL_GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").startswith("AIza")
 
 LIVE_LLM_INTENT_CASES = [
-    ("Do you have any running shoes under $80?", "product_details"),
-    ("Can you compare the best laptops for college?", "product_details"),
-    ("Hey there, how's your day going?", "small_talk"),
-    ("Thanks, that's all I needed today.", "small_talk"),
-    ("I want to hurt someone who scammed me.", "sensitive_topic"),
+    ("Do you have any running shoes under $80?", "product_search"),
+    ("Can you compare the best laptops for college?", "product_search"),
+    ("Hey there, how's your day going?", "fallback"),
+    ("Thanks, that's all I needed today.", "fallback"),
+    ("I want to hurt someone who scammed me.", "unsafe"),
     ("asdf qwerty", "clarify"),
 ]
 
 # Tests routing
-async def test_classify_intent_routes_known_prompts(mocker):
+async def test_extract_intent_and_entities_routes_known_prompts(mocker):
     import app.graph as graph
 
-    mock_classifier = mocker.Mock()
-    mock_classifier.ainvoke = AsyncMock(side_effect=[
-        graph.IntentClassification(intent="product_details"),
-        graph.IntentClassification(intent="small_talk"),
-        graph.IntentClassification(intent="sensitive_topic"),
-        graph.IntentClassification(intent="product_details"),
-        graph.IntentClassification(intent="clarify"),
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(side_effect=[
+        graph.IntentEntityExtraction(intent="product_search"),
+        graph.IntentEntityExtraction(intent="fallback"),
+        graph.IntentEntityExtraction(intent="unsafe"),
+        graph.IntentEntityExtraction(intent="product_search"),
+        graph.IntentEntityExtraction(intent="clarify"),
     ])
-    mocker.patch.object(graph, "_intent_classifier", mock_classifier)
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
 
-    assert (await graph.classify_intent({"input": "Do you have any running shoes under $80?"}))["intent"] == "product_details"
-    assert (await graph.classify_intent({"input": "Hey there, how's your day going?"}))["intent"] == "small_talk"
-    assert (await graph.classify_intent({"input": "I want to hurt someone who scammed me."}))["intent"] == "sensitive_topic"
-    assert (await graph.classify_intent({"input": "Can you compare the best laptops for college?"}))["intent"] == "product_details"
+    assert (await graph.extract_intent_and_entities({"input": "Do you have any running shoes under $80?"}))["intent"] == "product_search"
+    assert (await graph.extract_intent_and_entities({"input": "Hey there, how's your day going?"}))["intent"] == "fallback"
+    assert (await graph.extract_intent_and_entities({"input": "I want to hurt someone who scammed me."}))["intent"] == "unsafe"
+    assert (await graph.extract_intent_and_entities({"input": "Can you compare the best laptops for college?"}))["intent"] == "product_search"
 
     history_state = {
         "input": "What about one in blue?",
         "chat_history": [HumanMessage(content="Show me waterproof jackets for hiking.")],
     }
-    assert (await graph.classify_intent(history_state))["intent"] == "clarify"
+    assert (await graph.extract_intent_and_entities(history_state))["intent"] == "clarify"
 
-    assert mock_classifier.ainvoke.call_args_list[4].args[0] == {
+    assert mock_extractor.ainvoke.call_args_list[4].args[0] == {
         "input": "What about one in blue?",
         "chat_history": [HumanMessage(content="Show me waterproof jackets for hiking.")],
     }
 
-# Tests fallback behavior
-async def test_classify_intent_falls_back_to_clarify(mocker):
+
+async def test_extract_intent_and_entities_returns_cart_action_entities(mocker):
     import app.graph as graph
 
-    class InvalidClassification:
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(return_value=graph.IntentEntityExtraction(
+        intent="cart_action",
+        product_reference="the blue jacket",
+        quantity=2,
+        cart_action_type="add",
+    ))
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
+
+    result = await graph.extract_intent_and_entities({"input": "Add 2 of the blue jacket to my cart"})
+
+    assert result == {
+        "intent": "cart_action",
+        "product_reference": "the blue jacket",
+        "quantity": 2,
+        "cart_action_type": "add",
+    }
+
+
+# Tests fallback behavior
+async def test_extract_intent_and_entities_falls_back_to_clarify(mocker):
+    import app.graph as graph
+
+    class InvalidExtraction:
         intent = "not_a_real_intent"
+        product_reference = None
+        quantity = None
+        cart_action_type = None
 
-    mock_classifier = mocker.Mock()
-    mock_classifier.ainvoke = AsyncMock(return_value=InvalidClassification())
-    mocker.patch.object(graph, "_intent_classifier", mock_classifier)
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(return_value=InvalidExtraction())
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
 
-    result = await graph.classify_intent({"input": "asdf qwerty"})
+    result = await graph.extract_intent_and_entities({"input": "asdf qwerty"})
 
     assert result["intent"] == "clarify"
-    # Classifier ran successfully (just returned an unrecognized label) —
+    # Extraction ran successfully (just returned an unrecognized label) —
     # not an infra failure, so no error flag (contrast with the LLM-errors
     # test below).
     assert "error" not in result
 
 # Tests fallback behavior when LLM errors
-async def test_classify_intent_falls_back_to_clarify_when_llm_errors(mocker):
+async def test_extract_intent_and_entities_falls_back_to_clarify_when_llm_errors(mocker):
     import app.graph as graph
 
-    mock_classifier = mocker.Mock()
-    mock_classifier.ainvoke = AsyncMock(side_effect=RuntimeError("temporary model failure"))
-    mocker.patch.object(graph, "_intent_classifier", mock_classifier)
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(side_effect=RuntimeError("temporary model failure"))
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
 
-    result = await graph.classify_intent({"input": "I'm looking for a gift but not sure what kind"})
+    result = await graph.extract_intent_and_entities({"input": "I'm looking for a gift but not sure what kind"})
 
     assert result["intent"] == "clarify"
     # A real classifier failure (e.g. quota exhaustion) must be distinguishable
@@ -131,10 +157,10 @@ async def test_product_node_falls_back_when_agent_returns_no_output(mocker):
     reason="A real GOOGLE_API_KEY is required.",
 )
 @pytest.mark.parametrize(("prompt", "expected_intent"), LIVE_LLM_INTENT_CASES)
-async def test_classify_intent_with_live_llm(prompt, expected_intent):
+async def test_extract_intent_and_entities_with_live_llm(prompt, expected_intent):
     import app.graph as graph
 
-    assert (await graph.classify_intent({"input": prompt}))["intent"] == expected_intent
+    assert (await graph.extract_intent_and_entities({"input": prompt}))["intent"] == expected_intent
 
 # Tests live LLM classification with chat history (requires a real GOOGLE_API_KEY)
 @pytest.mark.llm
@@ -142,7 +168,7 @@ async def test_classify_intent_with_live_llm(prompt, expected_intent):
     not _HAS_REAL_GOOGLE_API_KEY,
     reason="A real GOOGLE_API_KEY is required.",
 )
-async def test_classify_intent_with_live_llm_uses_chat_history():
+async def test_extract_intent_and_entities_with_live_llm_uses_chat_history():
     import app.graph as graph
 
     state = {
@@ -150,4 +176,4 @@ async def test_classify_intent_with_live_llm_uses_chat_history():
         "chat_history": [HumanMessage(content="Show me waterproof jackets for hiking.")],
     }
 
-    assert (await graph.classify_intent(state))["intent"] == "product_details"
+    assert (await graph.extract_intent_and_entities(state))["intent"] == "product_search"

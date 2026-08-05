@@ -14,11 +14,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-Intent = Literal["product_details", "small_talk", "sensitive_topic", "clarify"]
-ALLOWED_INTENTS = {"product_details", "small_talk", "sensitive_topic", "clarify"}
+Intent = Literal["product_search", "product_details", "cart_action", "clarify", "fallback", "unsafe"]
+ALLOWED_INTENTS = {"product_search", "product_details", "cart_action", "clarify", "fallback", "unsafe"}
 
-# New 6-way intent label used by the upcoming extract_intent_and_entities node (#57).
-# Not wired in yet — Intent/ALLOWED_INTENTS above still drive today's classify_intent.
 CartActionType = Literal["add", "remove", "update_quantity"]
 
 
@@ -34,56 +32,12 @@ class GraphState(TypedDict, total=False):
     error: bool
 
 
-class IntentClassification(BaseModel):
-    intent: Intent = Field(
-        description="The best matching intent label for the user's message.",
-    )
-
-
-_INTENT_CLASSIFIER_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """Classify the user's message into exactly one ecommerce routing intent.
-
-Intents:
-- product_details: shopping intent, including product search, recommendations, comparisons, prices, availability, product attributes, or follow-up product questions.
-- small_talk: greetings, thanks, farewells, or casual conversation unrelated to shopping.
-- sensitive_topic: self-harm, violence, abuse, threats, illegal wrongdoing, or safety-sensitive content.
-- clarify: unclear messages that cannot be routed using the current message or chat history.
-
-Rules:
-- Use chat history to resolve follow-ups like "what about one in blue?"
-- Prefer product_details when the user is asking about buying, comparing, finding, or choosing products.
-- Prefer sensitive_topic whenever safety risk is present.
-- Use clarify only when no other intent clearly fits.
-
-Examples:
-- "Show me waterproof jackets under $100" -> product_details
-- "What about one in blue?" after discussing jackets -> product_details
-- "Can you compare laptops for college?" -> product_details
-- "Hey, how are you?" -> small_talk
-- "Thanks, that's all" -> small_talk
-- "I want to hurt someone" -> sensitive_topic
-- "asdf qwerty" -> clarify
-
-Return only the best intent label.""",
-        ),
-        MessagesPlaceholder(variable_name="chat_history", optional=True),
-        ("human", "{input}"),
-    ]
-)
-
 _intent_llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=settings.google_api_key,
     temperature=0,
 )
 
-_intent_classifier = _INTENT_CLASSIFIER_PROMPT | _intent_llm.with_structured_output(IntentClassification)
-
-
-# --- New intent+entity extraction (#57) — additive for now, not wired into classify_intent yet ---
 
 class IntentEntityExtraction(BaseModel):
     intent: Literal[
@@ -166,10 +120,10 @@ def _start_graph_span(name: str, state: GraphState):
         metadata={"component": "langgraph"},
     )
 
-async def classify_intent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
-    with _start_graph_span("graph.classify_intent", state) as span:
+async def extract_intent_and_entities(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
+    with _start_graph_span("graph.extract_intent_and_entities", state) as span:
         try:
-            result = await _intent_classifier.ainvoke(
+            result = await _intent_entity_extractor.ainvoke(
                 {
                     "input": state.get("input", ""),
                     "chat_history": state.get("chat_history", []),
@@ -182,20 +136,28 @@ async def classify_intent(state: GraphState, config: RunnableConfig | None = Non
                 status_message=str(exc),
                 output={"intent": "clarify", "error": True},
             )
-            logger.exception("Intent classification failed")
-            # Routes to clarify_node like a genuine ambiguous-message case
-            # (#57 will give this its own dedicated error path), but error=True
-            # lets callers (app/routes/chat.py) tell a real failure apart from
-            # an ordinary clarify response instead of the two looking
-            # identical to the caller (#77).
+            logger.exception("Intent+entity extraction failed")
+            # Routes to clarify_node like a genuine ambiguous-message case,
+            # but error=True lets callers (app/routes/chat.py) tell a real
+            # failure apart from an ordinary clarify response instead of the
+            # two looking identical to the caller (#77).
             return {"intent": "clarify", "error": True}
 
         intent = getattr(result, "intent", "clarify")
         if intent not in ALLOWED_INTENTS:
             intent = "clarify"
 
-        span.update(output={"intent": intent})
-        return {"intent": intent}
+        output: Dict[str, Any] = {"intent": intent}
+        if intent in ("product_details", "cart_action") and result.product_reference:
+            output["product_reference"] = result.product_reference
+        if intent == "cart_action":
+            if result.quantity is not None:
+                output["quantity"] = result.quantity
+            if result.cart_action_type:
+                output["cart_action_type"] = result.cart_action_type
+
+        span.update(output=output)
+        return output
 
 
 async def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
@@ -245,12 +207,18 @@ async def clarify_node(state: GraphState) -> Dict[str, Any]:
 def route_from_intent(state: GraphState) -> str:
     intent = state.get("intent", "clarify")
 
-    if intent == "product_details":
+    # TEMPORARY (#57): PS/PD/RD/VR/GR and CA/CV/EC/CG don't exist yet, so
+    # product_search/product_details still go through the old free-form
+    # product_node, and cart_action has nowhere real to go yet — clarify_node
+    # is a safe placeholder until the cart-action nodes are built.
+    if intent in ("product_search", "product_details"):
         route = "product_node"
-    elif intent == "small_talk":
-        route = "small_talk_node"
-    elif intent == "sensitive_topic":
+    elif intent == "cart_action":
+        route = "clarify_node"
+    elif intent == "unsafe":
         route = "sensitive_node"
+    elif intent == "fallback":
+        route = "small_talk_node"
     else:
         route = "clarify_node"
 
@@ -268,15 +236,15 @@ def route_from_intent(state: GraphState) -> str:
 def build_chat_graph():
     workflow = StateGraph(GraphState)
 
-    workflow.add_node("classify_intent", classify_intent)
+    workflow.add_node("extract_intent_and_entities", extract_intent_and_entities)
     workflow.add_node("product_node", product_node)
     workflow.add_node("small_talk_node", small_talk_node)
     workflow.add_node("sensitive_node", sensitive_node)
     workflow.add_node("clarify_node", clarify_node)
 
-    workflow.add_edge(START, "classify_intent")
+    workflow.add_edge(START, "extract_intent_and_entities")
     workflow.add_conditional_edges(
-        "classify_intent",
+        "extract_intent_and_entities",
         route_from_intent,
     )
 
