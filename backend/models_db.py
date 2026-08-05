@@ -58,6 +58,16 @@ class User(Base):
     addresses = relationship("Address", back_populates="user", cascade="all, delete-orphan")
 
 
+class UserPreferences(Base):
+    __tablename__ = "user_preferences"
+
+    # One row per user — no separate autoincrement id, same shape as
+    # Cart.user_id being unique (#54).
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    preferences = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow, nullable=False)
+
+
 class Address(Base):
     __tablename__ = "addresses"
 
