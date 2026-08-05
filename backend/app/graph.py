@@ -31,6 +31,7 @@ class GraphState(TypedDict, total=False):
     cart_action_type: CartActionType
     resolved_product_id: str
     cart_action_valid: bool
+    cart_action_result: str
     retrieved_data: str
     response: str
     error: bool
@@ -426,6 +427,51 @@ def route_from_cart_validation(state: GraphState) -> str:
         pass
 
     return route
+
+
+async def execute_cart_action(state: GraphState) -> Dict[str, Any]:
+    """EC: deterministic dispatch straight to the cart-mutation impl
+    functions — no StructuredTool, no LLM tool-calling loop (decision
+    #3/#4). session_id always comes from GraphState (trusted, HTTP-sourced),
+    never from IE/CA's output — same trusted-injection pattern app/agent.py
+    already uses for these same functions via the ReAct loop.
+
+    CV (previous step) has already validated product_id/action_type/
+    quantity by the time this runs, so no re-validation happens here.
+    """
+    _ensure_backend_on_path()
+    from cart_tools import add_to_cart_impl, remove_from_cart_impl, update_quantity_impl
+
+    with _start_graph_span("graph.execute_cart_action", state) as span:
+        action_type = state.get("cart_action_type")
+        product_id = state.get("resolved_product_id")
+        quantity = state.get("quantity")
+        session_id = state.get("session_id")
+
+        if action_type == "add":
+            raw = await add_to_cart_impl(product_id, quantity, session_id=session_id)
+        elif action_type == "remove":
+            raw = await remove_from_cart_impl(product_id, session_id=session_id)
+        elif action_type == "update_quantity":
+            raw = await update_quantity_impl(product_id, quantity, session_id=session_id)
+        else:
+            raw = json.dumps({"error": f"Unsupported cart action: {action_type}"})
+
+        span.update(output={"result": raw})
+        return {"cart_action_result": raw}
+
+
+def generate_cart_confirmation(state: GraphState) -> Dict[str, Any]:
+    """CG: deterministic, no LLM call. add_to_cart_impl/remove_from_cart_impl/
+    update_quantity_impl already return a human-readable "message" field
+    (e.g. "Added 2 x Blue Jacket to cart"), so reusing it directly stays
+    below decision #4's "one call for GR or CG" budget rather than using it.
+    """
+    with _start_graph_span("graph.generate_cart_confirmation", state) as span:
+        result = json.loads(state.get("cart_action_result") or "{}")
+        response = result.get("message") or result.get("error") or "Sorry, I couldn't update your cart."
+        span.update(output={"response": response})
+        return {"response": response}
 
 
 def small_talk_node(state: GraphState) -> Dict[str, Any]:

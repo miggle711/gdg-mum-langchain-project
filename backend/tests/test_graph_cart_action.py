@@ -171,3 +171,78 @@ def test_route_from_cart_validation_routes_to_clarify_when_invalid():
 
     assert graph.route_from_cart_validation({"cart_action_valid": False}) == "clarify_node"
     assert graph.route_from_cart_validation({}) == "clarify_node"
+
+
+# --- execute_cart_action (EC) ---
+
+async def test_execute_cart_action_add_dispatches_to_add_to_cart_impl(mocker):
+    import app.graph as graph
+
+    mock_add = mocker.patch("cart_tools.add_to_cart_impl", AsyncMock(return_value=json.dumps({"message": "Added 2 x Blue Jacket to cart"})))
+
+    state = {"cart_action_type": "add", "resolved_product_id": "p1", "quantity": 2, "session_id": "s1"}
+    result = await graph.execute_cart_action(state)
+
+    mock_add.assert_called_once_with("p1", 2, session_id="s1")
+    assert result == {"cart_action_result": json.dumps({"message": "Added 2 x Blue Jacket to cart"})}
+
+
+async def test_execute_cart_action_remove_dispatches_to_remove_from_cart_impl(mocker):
+    import app.graph as graph
+
+    mock_remove = mocker.patch("cart_tools.remove_from_cart_impl", AsyncMock(return_value=json.dumps({"message": "Removed item from cart"})))
+
+    state = {"cart_action_type": "remove", "resolved_product_id": "p1", "session_id": "s1"}
+    await graph.execute_cart_action(state)
+
+    mock_remove.assert_called_once_with("p1", session_id="s1")
+
+
+async def test_execute_cart_action_update_quantity_dispatches_to_update_quantity_impl(mocker):
+    import app.graph as graph
+
+    mock_update = mocker.patch("cart_tools.update_quantity_impl", AsyncMock(return_value=json.dumps({"message": "Updated quantity to 5"})))
+
+    state = {"cart_action_type": "update_quantity", "resolved_product_id": "p1", "quantity": 5, "session_id": "s1"}
+    await graph.execute_cart_action(state)
+
+    mock_update.assert_called_once_with("p1", 5, session_id="s1")
+
+
+async def test_execute_cart_action_unsupported_action_type_returns_error_without_calling_anything(mocker):
+    import app.graph as graph
+
+    mock_add = mocker.patch("cart_tools.add_to_cart_impl", AsyncMock())
+    mock_remove = mocker.patch("cart_tools.remove_from_cart_impl", AsyncMock())
+    mock_update = mocker.patch("cart_tools.update_quantity_impl", AsyncMock())
+
+    result = await graph.execute_cart_action({"cart_action_type": None, "resolved_product_id": "p1", "session_id": "s1"})
+
+    mock_add.assert_not_called()
+    mock_remove.assert_not_called()
+    mock_update.assert_not_called()
+    assert json.loads(result["cart_action_result"]) == {"error": "Unsupported cart action: None"}
+
+
+# --- generate_cart_confirmation (CG) ---
+
+def test_generate_cart_confirmation_uses_message_field():
+    import app.graph as graph
+
+    state = {"cart_action_result": json.dumps({"message": "Added 2 x Blue Jacket to cart", "items": [], "total": 79.99})}
+    assert graph.generate_cart_confirmation(state) == {"response": "Added 2 x Blue Jacket to cart"}
+
+
+def test_generate_cart_confirmation_falls_back_to_error_field():
+    import app.graph as graph
+
+    state = {"cart_action_result": json.dumps({"error": "Item not in cart"})}
+    assert graph.generate_cart_confirmation(state) == {"response": "Item not in cart"}
+
+
+def test_generate_cart_confirmation_falls_back_to_generic_apology():
+    import app.graph as graph
+
+    assert graph.generate_cart_confirmation({"cart_action_result": "{}"}) == {
+        "response": "Sorry, I couldn't update your cart."
+    }
