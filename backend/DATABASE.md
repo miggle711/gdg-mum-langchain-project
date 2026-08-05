@@ -106,9 +106,9 @@ categories = get_categories()
 
 ## Postgres (relational data)
 
-Phase 1 (issue #32) introduces Postgres as a relational store, separate from Elasticsearch. **ES remains the read path for the agent's search tools in Phase 1** — Postgres is additive, not yet a replacement for `query_products`/`semantic_search`. Whether product reads ever move onto Postgres is a future decision, not assumed here.
+Postgres (issue #32) is the relational store, separate from Elasticsearch. **ES remains the read path for the agent's search tools** — Postgres is additive, not a replacement for `query_products`/`semantic_search`. Whether product reads ever move onto Postgres is a future decision, not assumed here.
 
-**Tables**: `products`, `product_images` (1:N), `users`, `addresses` (1:N), `reviews` (1:N via `product_id`). See [docs/db-models.md](../docs/db-models.md) for the full field-level schema. `product_variants` was considered and explicitly dropped — the seed dataset has no real variant grouping (see issue #32). Cart/orders/payments are Phase 2, not yet built.
+**Tables**: `products`, `product_images` (1:N), `users`, `addresses` (1:N), `reviews` (1:N via `product_id`), `cart`, `cart_items` (1:N), `orders`, `order_items` (1:N), `payments` (1:1), `user_preferences` (#54). See [docs/db-models.md](../docs/db-models.md) for the full field-level schema. `product_variants` was considered and explicitly dropped — the seed dataset has no real variant grouping (see issue #32).
 
 **Async throughout (#41)**: the Postgres layer (`db.py`, `models_db.py`) was async from the start (`asyncpg`, `AsyncEngine`, `AsyncSession`), and `search.py`/`cache.py`/`conversations.py` were converted to match (`AsyncElasticsearch`, `redis.asyncio`) once issue #41 found the backend couldn't serve concurrent requests — route handlers were `async def` but the actual ES/Redis clients underneath were sync, blocking the single event loop for the full duration of every Gemini/ES/Redis round-trip. ES/Redis index initialization at boot now runs inside `app/main.py`'s FastAPI `lifespan` context manager rather than at plain module-import time — this matters because the async clients bind to whichever event loop they first run on, and a module-level `asyncio.run(...)` call would create connections bound to a throwaway loop that's already closed by the time uvicorn's real loop starts serving requests. `run_migrations()` is the one exception that stays at plain import time, since Alembic drives its own event loop internally and can't run inside one that's already active.
 
@@ -135,7 +135,13 @@ This wipes and recreates the schema for a clean run each time — not incrementa
 
 As of #49, this applies only to the two seed scripts' initial data. Writes made **through the product API routes** (`app/routes/products.py`) stay in sync: each route writes Postgres first, then performs the equivalent single-document ES write (`es_upsert_document`/`es_delete_document`), regenerating the BGE embedding on every create/update. This is lightweight and non-transactional — if the ES write fails after a successful Postgres commit, the request still returns success and the product is left stale in ES with no retry queue. See #40 (deferred) for the CDC-based alternative that would close this gap.
 
-Phase 2 (cart, orders, payments — see issue tracker) will add tables to this same Postgres database using the same `Base`/`get_session()` pattern in `db.py`.
+### Auth, carts, orders, and long-term memory (#49, #68, #82, #54)
+
+Cart/checkout (`app/routes/cart.py`), orders/payments, real authentication (`app/routes/auth.py`, JWT-based, `auth.py`), and per-user long-term memory (`user_preferences`, populated by `conversations.py`'s `maybe_summarise()`) have all since landed in this same Postgres database, using the same `Base`/`get_session()` pattern in `db.py`. See [docs/db-models.md](../docs/db-models.md) for field-level schemas of every table.
+
+Notably: **guest checkout is preserved alongside real accounts** (#82) — `session_identity.py`'s pre-existing shadow-user pattern (`get_or_create_shadow_user`) is untouched; a nullable `users.password_hash` column is the only thing distinguishing a real account from a guest, so cart/order code never needs to branch on which kind of identity it's dealing with. `session_identity.py`'s `resolve_user()` is the shared resolver every HTTP route (`cart.py`, `auth.py`-adjacent routes) should call: it checks for a valid JWT first, falling back to the guest shadow-user flow. **Known gap** (tracked in issue #86): chat-triggered cart/order actions — i.e. going through the LangGraph agent's tool-calling loop rather than a direct HTTP route — still trust the raw client-supplied `session_id` rather than `resolve_user`'s authenticated identity.
+
+Payment status is currently **mocked** — every checkout unconditionally succeeds, no real payment provider integration exists (see issue #68).
 
 ### Product write API (#49)
 

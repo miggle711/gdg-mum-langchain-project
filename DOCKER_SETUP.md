@@ -25,19 +25,34 @@ sudo systemctl start docker
 
 ## Environment Setup
 
-Before running Docker, create a `.env` file in the project root:
+Before running Docker, create a `.env` file **in `backend/`** (not the project root — that's the only `.env` file the app actually reads, per `backend/app/config.py`):
 
 ```bash
+cd backend
 cp .env.example .env
 ```
 
-Then edit `.env` and add your Google API key:
+Then edit `backend/.env` and add your Google API key:
 
 ```
 GOOGLE_API_KEY=your_actual_api_key_here
 ```
 
-**Without this, the backend will fail to start with:** `ValueError: GOOGLE_API_KEY environment variable not set`
+**Without this, the backend will fail to start** with a Pydantic validation error for the missing `google_api_key` setting.
+
+### The `docker compose up` gotcha: `.env` alone isn't enough
+
+`docker-compose.yml` does **not** read `backend/.env` directly. It passes config into the backend container via its `environment:` block, using `${GOOGLE_API_KEY}`-style references — which Docker Compose resolves from **your shell's environment at the moment you run `docker compose up`**, not from any `.env` file. Having the right values in `backend/.env` is necessary for non-Docker local runs and for the seed/utility scripts, but `docker compose up` on its own won't pick them up.
+
+Before running `docker compose up`, export the values your shell needs (once per terminal session, or add to your shell profile):
+
+```bash
+export GOOGLE_API_KEY=$(grep GOOGLE_API_KEY backend/.env | cut -d= -f2 | tr -d '"')
+export JWT_SECRET_KEY=$(grep JWT_SECRET_KEY backend/.env | cut -d= -f2 | tr -d '"')
+docker compose up --build
+```
+
+Skipping this doesn't always fail loudly — some vars (`JWT_SECRET_KEY`) are required and `docker compose` refuses to start without them, but others silently fall back to an empty string or default, which can manifest later as confusing runtime errors (e.g. Langfuse traces failing to export with a 401) rather than an obvious startup crash.
 
 See [LANGCHAIN_SETUP.md](LANGCHAIN_SETUP.md#google-api-key-setup) for how to get your API key.
 
@@ -91,15 +106,18 @@ lsof -i :8000    # Check port 8000
 
 ### Backend Crashes with API Key Error
 
-**Error:** `ValueError: GOOGLE_API_KEY environment variable not set`
+**Error:** A Pydantic validation error mentioning `google_api_key` (or the backend container exits immediately after a `docker compose up`).
 
-**Solution:** Verify `.env` exists in project root and contains `GOOGLE_API_KEY=...`
+**Solution:** Two separate things to check:
 
-```bash
-cat .env  # Verify the file exists
-```
+1. Verify `backend/.env` exists and contains `GOOGLE_API_KEY=...`:
 
-If missing, create it as described in [Environment Setup](#environment-setup).
+   ```bash
+   cat backend/.env
+   ```
+
+   If missing, create it as described in [Environment Setup](#environment-setup).
+2. Verify you've **exported** the same values into your shell before running `docker compose up` — see [the gotcha above](#the-docker-compose-up-gotcha-env-alone-isnt-enough). Having a correct `backend/.env` alone is not sufficient for `docker compose up`.
 
 ### Frontend Shows "Failed to start chat"
 
