@@ -15,6 +15,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from auth import decode_access_token
 from conversations import save_messages, load_messages, maybe_summarise
 from cache import _get_redis
 from app.models import ChatRequest, ChatResponse, ConversationData, FeedbackRequest, FeedbackResponse
@@ -23,6 +24,23 @@ from app.graph import chat_graph
 from app.limiter import limiter
 
 router = APIRouter()
+
+
+def _conversation_key(request: Request, session_id: str) -> str:
+    """Keys conversation history by user_id when a valid JWT is present,
+    falling back to session_id for guests (#82) — so a logged-in user's
+    conversation history can't be read/deleted by anyone who guesses or is
+    handed their session_id, since a real user_id can't be forged without
+    the JWT secret. Deliberately does NOT call resolve_user/hit Postgres:
+    a JWT's signature alone proves the user_id claim, no DB lookup needed
+    just to pick a Redis key, and this keeps /chat's guest path exactly as
+    dependency-free as it is today (no forced shadow-user DB write per
+    anonymous message).
+    """
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip()
+    user_id = decode_access_token(token) if token else None
+    return str(user_id) if user_id is not None else session_id
 
 
 async def get_or_create_conversation(session_id: str) -> ConversationData:
@@ -38,10 +56,11 @@ async def get_or_create_conversation(session_id: str) -> ConversationData:
 @limiter.limit("20/minute")
 async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     try:
-        conversation = await get_or_create_conversation(body.session_id)
+        conversation_key = _conversation_key(request, body.session_id)
+        conversation = await get_or_create_conversation(conversation_key)
         history = conversation["history"]
 
-        summary, recent_messages = await maybe_summarise(body.session_id, history.messages, _llm)
+        summary, recent_messages = await maybe_summarise(conversation_key, history.messages, _llm)
 
         chat_history = []
         if summary:
@@ -92,7 +111,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 
         history.add_user_message(body.message)
         history.add_ai_message(response_text)
-        await save_messages(body.session_id, history.messages)
+        await save_messages(conversation_key, history.messages)
 
         return ChatResponse(
             session_id=body.session_id,
@@ -110,10 +129,11 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
 @router.post("/chat/stream")
 @limiter.limit("20/minute")
 async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
-    conversation = await get_or_create_conversation(body.session_id)
+    conversation_key = _conversation_key(request, body.session_id)
+    conversation = await get_or_create_conversation(conversation_key)
     history = conversation["history"]
 
-    summary, recent_messages = await maybe_summarise(body.session_id, history.messages, _llm)
+    summary, recent_messages = await maybe_summarise(conversation_key, history.messages, _llm)
 
     chat_history = []
     if summary:
@@ -179,7 +199,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> StreamingResponse:
             if full_response:
                 history.add_user_message(body.message)
                 history.add_ai_message(full_response)
-                await save_messages(body.session_id, history.messages)
+                await save_messages(conversation_key, history.messages)
 
         yield "data: [DONE]\n\n"
 
@@ -197,8 +217,9 @@ async def start_session() -> dict[str, str]:
 
 
 @router.get("/conversation/{session_id}")
-async def get_conversation(session_id: str):
-    messages = await load_messages(session_id)
+async def get_conversation(request: Request, session_id: str):
+    conversation_key = _conversation_key(request, session_id)
+    messages = await load_messages(conversation_key)
     if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -215,9 +236,10 @@ async def get_conversation(session_id: str):
 
 
 @router.delete("/conversation/{session_id}")
-async def delete_conversation(session_id: str):
+async def delete_conversation(request: Request, session_id: str):
+    conversation_key = _conversation_key(request, session_id)
     r = _get_redis()
-    deleted = await r.delete(f"conversation:{session_id}")
+    deleted = await r.delete(f"conversation:{conversation_key}")
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"message": "Conversation deleted"}
