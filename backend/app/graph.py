@@ -1,4 +1,5 @@
 # backend/app/graph.py
+import json
 import logging
 from typing import Any, Dict, Literal, TypedDict
 
@@ -107,6 +108,30 @@ Return only the requested fields.""",
 )
 
 _intent_entity_extractor = _INTENT_ENTITY_PROMPT | _intent_llm.with_structured_output(IntentEntityExtraction)
+
+
+async def resolve_product_reference(reference: str) -> str | None:
+    """Resolve a natural-language product reference (e.g. "the blue jacket")
+    to a catalog product_id, via semantic_search_impl's top match.
+
+    Shared by the upcoming CA (cart action) and RD/PD (product details)
+    nodes (#57) so reference resolution isn't duplicated between them.
+    Not wired into any node yet.
+
+    tools.py is imported lazily here, not at module level, so importing
+    graph.py itself doesn't require tools.py's dependencies (e.g.
+    elasticsearch) to be installed — same reasoning as _invoke_product_agent's
+    lazy `from app.agent import agent_executor` below.
+    """
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tools import semantic_search_impl
+
+    raw = await semantic_search_impl(reference, limit=1)
+    results = json.loads(raw).get("results") or []
+    return results[0].get("id") if results else None
+
 
 langfuse_client = get_client()
 
