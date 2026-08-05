@@ -25,4 +25,5 @@ jobs:
         working-directory: backend
         env:
           GOOGLE_API_KEY: dummy-key-for-tests
+          JWT_SECRET_KEY: dummy-jwt-secret-for-tests
         run: pytest -v -m "not llm"

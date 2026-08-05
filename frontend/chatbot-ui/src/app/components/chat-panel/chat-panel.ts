@@ -9,6 +9,7 @@ import { MatDividerModule } from '@angular/material/divider';
 import { TextFieldModule } from '@angular/cdk/text-field';
 import { Chat } from '../../services/chat';
 import { Session } from '../../services/session';
+import { Auth } from '../../services/auth';
 
 /**
  * ChatPanel is an Angular component that provides a user interface for a chatbot conversation. 
@@ -52,10 +53,22 @@ export class ChatPanel implements AfterViewChecked, OnInit {
   private shouldScroll = false;
   private sessionId = '';
 
+  // Auth panel state: toggled by the header's "Log in" link. Not routed:
+  // this widget has no page navigation, so login/signup is just another
+  // view swapped in within the same panel (#82).
+  showAuthForm = false;
+  authMode: 'login' | 'signup' = 'login';
+  authEmail = '';
+  authPassword = '';
+  authName = '';
+  authError = '';
+  authLoading = false;
+
   // add the Chat service from the services folder, which is responsible for communicating with the backend API to send messages,
   // the Session service, which resolves/persists the session_id across page refreshes (localStorage),
+  // the Auth service, which handles login/signup and JWT storage,
   //  as well as ChangeDetectorRef to manually trigger change detection when we update the messages array or loading state
-  constructor(private chat: Chat, private session: Session, private cdr: ChangeDetectorRef) {}
+  constructor(private chat: Chat, private session: Session, public auth: Auth, private cdr: ChangeDetectorRef) {}
 
 
   // OnInit is a lifecycle hook that is called after the component is initialized, and we use it to resolve the session and load the conversation when the component loads
@@ -168,6 +181,58 @@ export class ChatPanel implements AfterViewChecked, OnInit {
         this.cdr.markForCheck();
       },
     );
+  }
+
+  toggleAuthForm() {
+    this.showAuthForm = !this.showAuthForm;
+    this.authError = '';
+    this.cdr.markForCheck();
+  }
+
+  switchAuthMode(mode: 'login' | 'signup') {
+    this.authMode = mode;
+    this.authError = '';
+    this.cdr.markForCheck();
+  }
+
+  submitAuthForm() {
+    if (!this.authEmail.trim() || !this.authPassword.trim()) return;
+    if (this.authMode === 'signup' && !this.authName.trim()) return;
+
+    this.authLoading = true;
+    this.authError = '';
+    this.cdr.markForCheck();
+
+    const request$ =
+      this.authMode === 'login'
+        ? this.auth.login(this.authEmail.trim(), this.authPassword)
+        : this.auth.signup(this.authEmail.trim(), this.authPassword, this.authName.trim());
+
+    request$.subscribe({
+      next: () => {
+        this.authLoading = false;
+        this.showAuthForm = false;
+        this.authEmail = '';
+        this.authPassword = '';
+        this.authName = '';
+        this.cdr.markForCheck();
+        // Re-resolve the conversation now that we're logged in — Chat's
+        // requests now carry the Authorization header, so this rehydrates
+        // the account's real history instead of the guest session's (#82).
+        this.initializeSession();
+      },
+      error: (err) => {
+        this.authLoading = false;
+        this.authError = err?.error?.detail ?? 'Something went wrong. Please try again.';
+        this.cdr.markForCheck();
+      },
+    });
+  }
+
+  logout() {
+    this.auth.logout();
+    // Re-resolve as a guest — back to the session_id-keyed conversation.
+    this.initializeSession();
   }
 
   rateFeedback(index: number, value: boolean) {

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_base_url: str = "https://cloud.langfuse.com"
+    jwt_secret_key: str
+    jwt_algorithm: str = "HS256"
+    jwt_expiry_minutes: int = 60 * 24 * 7  # 1 week
 
     class Config:
         env_file = str(_ENV_FILE)

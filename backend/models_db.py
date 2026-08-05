@@ -52,6 +52,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String, nullable=False, unique=True, index=True)
     name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # NULL = guest/shadow user; set = real account (#82)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
     addresses = relationship("Address", back_populates="user", cascade="all, delete-orphan")

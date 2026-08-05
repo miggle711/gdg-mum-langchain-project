@@ -7,13 +7,13 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from db import get_session
 from models_db import Address, Cart, CartItem, Order, OrderItem, Payment, Product
-from session_identity import get_or_create_shadow_user
+from session_identity import resolve_user
 from app.models import (
     AddToCartRequest,
     CartItemResponse,
@@ -52,10 +52,10 @@ async def _load_cart_response(session, user_id: int, session_id: str) -> CartRes
 
 
 @router.get("/cart/{session_id}")
-async def get_cart(session_id: str) -> CartResponse:
+async def get_cart(request: Request, session_id: str) -> CartResponse:
     try:
         async with get_session() as session:
-            user = await get_or_create_shadow_user(session, session_id)
+            user = await resolve_user(session, authorization_header=request.headers.get("authorization"), session_id=session_id)
             response = await _load_cart_response(session, user.id, session_id)
             await session.commit()
         return response
@@ -65,14 +65,14 @@ async def get_cart(session_id: str) -> CartResponse:
 
 
 @router.post("/cart/add")
-async def add_to_cart(body: AddToCartRequest) -> CartResponse:
+async def add_to_cart(request: Request, body: AddToCartRequest) -> CartResponse:
     try:
         async with get_session() as session:
             product = await session.get(Product, body.product_id)
             if product is None:
                 raise HTTPException(status_code=404, detail="Product not found")
 
-            user = await get_or_create_shadow_user(session, body.session_id)
+            user = await resolve_user(session, authorization_header=request.headers.get("authorization"), session_id=body.session_id)
             cart = await _get_or_create_cart(session, user.id)
 
             result = await session.execute(
@@ -133,10 +133,10 @@ async def remove_cart_item(item_id: int) -> dict[str, str]:
 
 
 @router.post("/checkout")
-async def checkout(body: CheckoutRequest) -> CheckoutResponse:
+async def checkout(request: Request, body: CheckoutRequest) -> CheckoutResponse:
     try:
         async with get_session() as session:
-            user = await get_or_create_shadow_user(session, body.session_id)
+            user = await resolve_user(session, authorization_header=request.headers.get("authorization"), session_id=body.session_id)
 
             # No self-serve address management exists yet for session-only
             # (shadow) users — checkout requires an address already owned
@@ -223,10 +223,10 @@ async def checkout(body: CheckoutRequest) -> CheckoutResponse:
 
 
 @router.get("/orders/{session_id}")
-async def list_orders(session_id: str) -> list[OrderResponse]:
+async def list_orders(request: Request, session_id: str) -> list[OrderResponse]:
     try:
         async with get_session() as session:
-            user = await get_or_create_shadow_user(session, session_id)
+            user = await resolve_user(session, authorization_header=request.headers.get("authorization"), session_id=session_id)
             await session.commit()
             result = await session.execute(
                 select(Order)
