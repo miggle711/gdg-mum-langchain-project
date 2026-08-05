@@ -2,6 +2,8 @@ import json
 
 from unittest.mock import AsyncMock
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 
 async def test_product_search_node_and_product_details_node_are_pass_throughs():
     import app.graph as graph
@@ -122,3 +124,62 @@ def test_route_from_validation_treats_missing_retrieved_data_as_no_results():
     import app.graph as graph
 
     assert graph.route_from_validation({}) == "clarify_node"
+
+
+async def test_generate_grounded_response_returns_llm_content(mocker):
+    import app.graph as graph
+
+    mocker.patch.object(
+        graph, "_grounded_response_chain",
+        mocker.Mock(ainvoke=AsyncMock(return_value=AIMessage(content="We have three great jackets in stock."))),
+    )
+
+    result = await graph.generate_grounded_response({
+        "input": "show me jackets",
+        "retrieved_data": json.dumps({"results": [{"id": "p1", "name": "Jacket"}], "count": 1}),
+    })
+
+    assert result == {"response": "We have three great jackets in stock."}
+
+
+async def test_generate_grounded_response_passes_input_history_and_retrieved_data(mocker):
+    import app.graph as graph
+
+    mock_chain = mocker.Mock(ainvoke=AsyncMock(return_value=AIMessage(content="Here you go.")))
+    mocker.patch.object(graph, "_grounded_response_chain", mock_chain)
+
+    retrieved = json.dumps({"results": [{"id": "p1"}], "count": 1})
+    history = [HumanMessage(content="Looking for a jacket")]
+    await graph.generate_grounded_response({"input": "show me jackets", "chat_history": history, "retrieved_data": retrieved})
+
+    assert mock_chain.ainvoke.call_args.args[0] == {
+        "input": "show me jackets",
+        "chat_history": history,
+        "retrieved_data": retrieved,
+    }
+
+
+async def test_generate_grounded_response_falls_back_when_llm_errors(mocker):
+    import app.graph as graph
+
+    mocker.patch.object(
+        graph, "_grounded_response_chain",
+        mocker.Mock(ainvoke=AsyncMock(side_effect=RuntimeError("model unavailable"))),
+    )
+
+    result = await graph.generate_grounded_response({"input": "show me jackets", "retrieved_data": "{}"})
+
+    assert result == {"response": "I apologize, but I'm having trouble generating a response at the moment."}
+
+
+async def test_generate_grounded_response_falls_back_when_content_empty(mocker):
+    import app.graph as graph
+
+    mocker.patch.object(
+        graph, "_grounded_response_chain",
+        mocker.Mock(ainvoke=AsyncMock(return_value=AIMessage(content=""))),
+    )
+
+    result = await graph.generate_grounded_response({"input": "show me jackets", "retrieved_data": "{}"})
+
+    assert result == {"response": "I apologize, but I'm having trouble generating a response at the moment."}

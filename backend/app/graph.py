@@ -111,6 +111,39 @@ Return only the requested fields.""",
 _intent_entity_extractor = _INTENT_ENTITY_PROMPT | _intent_llm.with_structured_output(IntentEntityExtraction)
 
 
+# --- Grounded response generation (GR, #57) ---
+# Its own LLM, at a higher temperature than the intent/entity extractor,
+# matching app/agent.py's _llm (0.7) — this one writes conversational replies,
+# not structured classifications, so some variation is desirable here.
+_response_llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=settings.google_api_key,
+    temperature=0.7,
+)
+
+_GROUNDED_RESPONSE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a helpful ecommerce customer service assistant. Answer the customer's message using ONLY the product data provided below - do not invent details that aren't present in it.
+
+Product data (JSON):
+{retrieved_data}
+
+Guidelines:
+- Be polite, professional, and concise.
+- When describing products, include price, rating, and number of reviews if available.
+- If multiple products are present, briefly summarize the most relevant ones rather than listing every field for every item.
+- Do not mention "JSON" or that you were given data - just answer naturally, as if you already knew this.""",
+        ),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ("human", "{input}"),
+    ]
+)
+
+_grounded_response_chain = _GROUNDED_RESPONSE_PROMPT | _response_llm
+
+
 def _ensure_backend_on_path() -> None:
     """tools.py/cart_tools.py live at backend/*.py, outside the app package —
     same sys.path hack app/agent.py uses at module level, but applied lazily
@@ -271,6 +304,33 @@ async def retrieve_data(state: GraphState) -> Dict[str, Any]:
 
         span.update(output={"result_count": retrieved["count"]})
         return {"retrieved_data": json.dumps(retrieved)}
+
+
+async def generate_grounded_response(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
+    """GR (#57): the one genuinely new LLM call in this redesign - turns
+    RD's retrieved_data into a natural-language reply grounded in the
+    actual product data, replacing the old free-form agent loop's job of
+    describing results in prose. Not wired into the graph yet.
+    """
+    with _start_graph_span("graph.generate_grounded_response", state) as span:
+        fallback = "I apologize, but I'm having trouble generating a response at the moment."
+        try:
+            result = await _grounded_response_chain.ainvoke(
+                {
+                    "input": state.get("input", ""),
+                    "chat_history": state.get("chat_history", []),
+                    "retrieved_data": state.get("retrieved_data", "{}"),
+                },
+                config=config,
+            )
+            response = result.content or fallback
+        except Exception as exc:
+            span.update(level="ERROR", status_message=str(exc), output={"response": None})
+            logger.exception("Grounded response generation failed")
+            return {"response": fallback}
+
+        span.update(output={"response": response})
+        return {"response": response}
 
 
 def validate_results(state: GraphState) -> Dict[str, Any]:
