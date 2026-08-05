@@ -166,8 +166,7 @@ async def resolve_product_reference(reference: str) -> str | None:
 
     tools.py is imported lazily here, not at module level, so importing
     graph.py itself doesn't require tools.py's dependencies (e.g.
-    elasticsearch) to be installed — same reasoning as _invoke_product_agent's
-    lazy `from app.agent import agent_executor` below.
+    elasticsearch) to be installed.
     """
     _ensure_backend_on_path()
     from tools import semantic_search_impl
@@ -229,41 +228,16 @@ async def extract_intent_and_entities(state: GraphState, config: RunnableConfig 
         return output
 
 
-async def _invoke_product_agent(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
-    from app.agent import agent_executor
-    return await agent_executor.invoke(
-        {
-            "input": state.get("input", ""),
-            "chat_history": state.get("chat_history", []),
-        },
-        config=config,
-        session_id=state.get("session_id"),
-    )
-
-
-async def product_node(state: GraphState, config: RunnableConfig | None = None) -> Dict[str, Any]:
-    with _start_graph_span("graph.product_node", state) as span:
-        result = await _invoke_product_agent(state, config=config)
-        response = result.get("output") or "I apologize, but I'm having trouble generating a response at the moment."
-        span.update(output={
-            "response": response,
-            "tool_calls": result.get("tool_calls", []),
-            })
-        return {"response": response}
-
-
 async def product_search_node(state: GraphState) -> Dict[str, Any]:
     """PS (#57): thin pass-through so product-search turns get their own
-    trace span before retrieve_data runs the actual lookup. Not wired in yet
-    — product_node/product_search still handle the live traffic until Step
-    3 finishes and route_from_intent switches over.
+    trace span before retrieve_data runs the actual lookup.
     """
     with _start_graph_span("graph.product_search_node", state):
         return {}
 
 
 async def product_details_node(state: GraphState) -> Dict[str, Any]:
-    """PD (#57): thin pass-through, mirrors product_search_node. Not wired in yet."""
+    """PD (#57): thin pass-through, mirrors product_search_node."""
     with _start_graph_span("graph.product_details_node", state):
         return {}
 
@@ -275,8 +249,8 @@ async def retrieve_data(state: GraphState) -> Dict[str, Any]:
     (decision #2 — IE doesn't pre-extract filters). product_details instead
     resolves IE's extracted product_reference to a concrete id first, then
     does an exact lookup. Both paths normalize their output to the same
-    {"results": [...], "count": n} shape so VR/GR (added next) don't need
-    to know which path was taken. Not wired into the graph yet.
+    {"results": [...], "count": n} shape so VR/GR don't need to know which
+    path was taken.
     """
     _ensure_backend_on_path()
     from tools import semantic_search_impl
@@ -310,7 +284,7 @@ async def generate_grounded_response(state: GraphState, config: RunnableConfig |
     """GR (#57): the one genuinely new LLM call in this redesign - turns
     RD's retrieved_data into a natural-language reply grounded in the
     actual product data, replacing the old free-form agent loop's job of
-    describing results in prose. Not wired into the graph yet.
+    describing results in prose.
     """
     with _start_graph_span("graph.generate_grounded_response", state) as span:
         fallback = "I apologize, but I'm having trouble generating a response at the moment."
@@ -337,7 +311,7 @@ def validate_results(state: GraphState) -> Dict[str, Any]:
     """VR (#57): checks whether RD found anything, for route_from_validation
     to act on. Doesn't change state itself — exists as its own node (rather
     than folding the check into route_from_validation) so it gets its own
-    trace span, matching the diagram. Not wired into the graph yet.
+    trace span, matching the diagram.
     """
     with _start_graph_span("graph.validate_results", state) as span:
         retrieved = json.loads(state.get("retrieved_data") or "{}")
@@ -385,12 +359,13 @@ async def clarify_node(state: GraphState) -> Dict[str, Any]:
 def route_from_intent(state: GraphState) -> str:
     intent = state.get("intent", "clarify")
 
-    # TEMPORARY (#57): PS/PD/RD/VR/GR and CA/CV/EC/CG don't exist yet, so
-    # product_search/product_details still go through the old free-form
-    # product_node, and cart_action has nowhere real to go yet — clarify_node
-    # is a safe placeholder until the cart-action nodes are built.
-    if intent in ("product_search", "product_details"):
-        route = "product_node"
+    # TEMPORARY (#57): CA/CV/EC/CG don't exist yet, so cart_action has
+    # nowhere real to go — clarify_node is a safe placeholder until the
+    # cart-action nodes are built (next step).
+    if intent == "product_search":
+        route = "product_search_node"
+    elif intent == "product_details":
+        route = "product_details_node"
     elif intent == "cart_action":
         route = "clarify_node"
     elif intent == "unsafe":
@@ -415,7 +390,11 @@ def build_chat_graph():
     workflow = StateGraph(GraphState)
 
     workflow.add_node("extract_intent_and_entities", extract_intent_and_entities)
-    workflow.add_node("product_node", product_node)
+    workflow.add_node("product_search_node", product_search_node)
+    workflow.add_node("product_details_node", product_details_node)
+    workflow.add_node("retrieve_data", retrieve_data)
+    workflow.add_node("validate_results", validate_results)
+    workflow.add_node("generate_grounded_response", generate_grounded_response)
     workflow.add_node("small_talk_node", small_talk_node)
     workflow.add_node("sensitive_node", sensitive_node)
     workflow.add_node("clarify_node", clarify_node)
@@ -426,7 +405,15 @@ def build_chat_graph():
         route_from_intent,
     )
 
-    workflow.add_edge("product_node", END)
+    workflow.add_edge("product_search_node", "retrieve_data")
+    workflow.add_edge("product_details_node", "retrieve_data")
+    workflow.add_edge("retrieve_data", "validate_results")
+    workflow.add_conditional_edges(
+        "validate_results",
+        route_from_validation,
+    )
+
+    workflow.add_edge("generate_grounded_response", END)
     workflow.add_edge("small_talk_node", END)
     workflow.add_edge("sensitive_node", END)
     workflow.add_edge("clarify_node", END)

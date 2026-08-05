@@ -183,3 +183,67 @@ async def test_generate_grounded_response_falls_back_when_content_empty(mocker):
     result = await graph.generate_grounded_response({"input": "show me jackets", "retrieved_data": "{}"})
 
     assert result == {"response": "I apologize, but I'm having trouble generating a response at the moment."}
+
+
+# --- End-to-end: proves the actual wiring in build_chat_graph() is correct,
+# not just each node in isolation (a typo'd node-name string in an edge
+# wouldn't be caught by any of the unit tests above). ---
+
+async def test_chat_graph_end_to_end_product_search_with_results(mocker, mock_embedding_model):
+    import app.graph as graph
+
+    mocker.patch.object(graph, "_intent_entity_extractor", mocker.Mock(
+        ainvoke=AsyncMock(return_value=graph.IntentEntityExtraction(intent="product_search")),
+    ))
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mocker.patch("tools.semantic_search", return_value=[
+        {
+            "id": "p1", "name": "Running Shoes", "price": 59.99, "originalprice": None,
+            "rating": 4.2, "reviews": 30, "category_name": "Footwear", "similarity": 0.88,
+        },
+    ])
+    mocker.patch.object(graph, "_grounded_response_chain", mocker.Mock(
+        ainvoke=AsyncMock(return_value=AIMessage(content="We have great running shoes for $59.99!")),
+    ))
+
+    result = await graph.chat_graph.ainvoke({"input": "running shoes", "chat_history": [], "session_id": "s1"})
+
+    assert result["intent"] == "product_search"
+    assert result["response"] == "We have great running shoes for $59.99!"
+
+
+async def test_chat_graph_end_to_end_product_search_no_results_routes_to_clarify(mocker, mock_embedding_model):
+    import app.graph as graph
+
+    mocker.patch.object(graph, "_intent_entity_extractor", mocker.Mock(
+        ainvoke=AsyncMock(return_value=graph.IntentEntityExtraction(intent="product_search")),
+    ))
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mocker.patch("tools.semantic_search", return_value=[])
+
+    result = await graph.chat_graph.ainvoke({"input": "something nonexistent", "chat_history": [], "session_id": "s1"})
+
+    assert result["response"] == "response from graph - clarify node placeholder"
+
+
+async def test_chat_graph_end_to_end_product_details(mocker, mock_embedding_model):
+    import app.graph as graph
+
+    mocker.patch.object(graph, "_intent_entity_extractor", mocker.Mock(
+        ainvoke=AsyncMock(return_value=graph.IntentEntityExtraction(
+            intent="product_details", product_reference="the blue jacket",
+        )),
+    ))
+    mocker.patch.object(graph, "resolve_product_reference", AsyncMock(return_value="p1"))
+    mocker.patch(
+        "cart_tools.get_product_impl",
+        AsyncMock(return_value=json.dumps({"id": "p1", "name": "Blue Jacket", "price": 79.99})),
+    )
+    mocker.patch.object(graph, "_grounded_response_chain", mocker.Mock(
+        ainvoke=AsyncMock(return_value=AIMessage(content="The Blue Jacket is $79.99.")),
+    ))
+
+    result = await graph.chat_graph.ainvoke({"input": "tell me about the blue jacket", "chat_history": [], "session_id": "s1"})
+
+    assert result["intent"] == "product_details"
+    assert result["response"] == "The Blue Jacket is $79.99."

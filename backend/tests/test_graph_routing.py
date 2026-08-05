@@ -121,34 +121,18 @@ def test_graph_compiles():
     assert graph.chat_graph is not None
 
 
-async def test_product_node_uses_product_agent(mocker):
+def test_route_from_intent_routes_each_intent_to_the_expected_node():
     import app.graph as graph
 
-    mock_invoke = mocker.patch.object(
-        graph,
-        "_invoke_product_agent",
-        AsyncMock(return_value={"output": "Here are three laptop options under $900."}),
-    )
-
-    state = {
-        "input": "Show me laptops under $900",
-        "chat_history": [HumanMessage(content="I need something for school.")],
-    }
-
-    assert (await graph.product_node(state)) == {
-        "response": "Here are three laptop options under $900."
-    }
-    mock_invoke.assert_called_once_with(state, config=None)
-
-
-async def test_product_node_falls_back_when_agent_returns_no_output(mocker):
-    import app.graph as graph
-
-    mocker.patch.object(graph, "_invoke_product_agent", AsyncMock(return_value={}))
-
-    assert (await graph.product_node({"input": "Find a coffee grinder"})) == {
-        "response": "I apologize, but I'm having trouble generating a response at the moment."
-    }
+    assert graph.route_from_intent({"intent": "product_search"}) == "product_search_node"
+    assert graph.route_from_intent({"intent": "product_details"}) == "product_details_node"
+    # TEMPORARY (#57): cart_action has no real destination yet — clarify_node
+    # is a placeholder until the cart-action nodes are built next.
+    assert graph.route_from_intent({"intent": "cart_action"}) == "clarify_node"
+    assert graph.route_from_intent({"intent": "unsafe"}) == "sensitive_node"
+    assert graph.route_from_intent({"intent": "fallback"}) == "small_talk_node"
+    assert graph.route_from_intent({"intent": "clarify"}) == "clarify_node"
+    assert graph.route_from_intent({}) == "clarify_node"
 
 # Tests live LLM classification (requires a real GOOGLE_API_KEY)
 @pytest.mark.llm
