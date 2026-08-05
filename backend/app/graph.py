@@ -29,6 +29,7 @@ class GraphState(TypedDict, total=False):
     product_reference: str
     quantity: int
     cart_action_type: CartActionType
+    retrieved_data: str
     response: str
     error: bool
 
@@ -110,22 +111,32 @@ Return only the requested fields.""",
 _intent_entity_extractor = _INTENT_ENTITY_PROMPT | _intent_llm.with_structured_output(IntentEntityExtraction)
 
 
+def _ensure_backend_on_path() -> None:
+    """tools.py/cart_tools.py live at backend/*.py, outside the app package —
+    same sys.path hack app/agent.py uses at module level, but applied lazily
+    (see resolve_product_reference/retrieve_data) and guarded so repeated
+    calls in a long-running server don't keep appending duplicate entries.
+    """
+    import os
+    import sys
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+
 async def resolve_product_reference(reference: str) -> str | None:
     """Resolve a natural-language product reference (e.g. "the blue jacket")
     to a catalog product_id, via semantic_search_impl's top match.
 
-    Shared by the upcoming CA (cart action) and RD/PD (product details)
-    nodes (#57) so reference resolution isn't duplicated between them.
-    Not wired into any node yet.
+    Shared by the CA (cart action) and RD/PD (product details) nodes (#57)
+    so reference resolution isn't duplicated between them.
 
     tools.py is imported lazily here, not at module level, so importing
     graph.py itself doesn't require tools.py's dependencies (e.g.
     elasticsearch) to be installed — same reasoning as _invoke_product_agent's
     lazy `from app.agent import agent_executor` below.
     """
-    import os
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _ensure_backend_on_path()
     from tools import semantic_search_impl
 
     raw = await semantic_search_impl(reference, limit=1)
@@ -206,6 +217,60 @@ async def product_node(state: GraphState, config: RunnableConfig | None = None) 
             "tool_calls": result.get("tool_calls", []),
             })
         return {"response": response}
+
+
+async def product_search_node(state: GraphState) -> Dict[str, Any]:
+    """PS (#57): thin pass-through so product-search turns get their own
+    trace span before retrieve_data runs the actual lookup. Not wired in yet
+    — product_node/product_search still handle the live traffic until Step
+    3 finishes and route_from_intent switches over.
+    """
+    with _start_graph_span("graph.product_search_node", state):
+        return {}
+
+
+async def product_details_node(state: GraphState) -> Dict[str, Any]:
+    """PD (#57): thin pass-through, mirrors product_search_node. Not wired in yet."""
+    with _start_graph_span("graph.product_details_node", state):
+        return {}
+
+
+async def retrieve_data(state: GraphState) -> Dict[str, Any]:
+    """RD (#57): deterministic retrieval, no LLM tool-calling loop (decision
+    #3). product_search hands the raw user text straight to
+    semantic_search_impl, which parses natural-language queries itself
+    (decision #2 — IE doesn't pre-extract filters). product_details instead
+    resolves IE's extracted product_reference to a concrete id first, then
+    does an exact lookup. Both paths normalize their output to the same
+    {"results": [...], "count": n} shape so VR/GR (added next) don't need
+    to know which path was taken. Not wired into the graph yet.
+    """
+    _ensure_backend_on_path()
+    from tools import semantic_search_impl
+    from cart_tools import get_product_impl
+
+    with _start_graph_span("graph.retrieve_data", state) as span:
+        if state.get("intent") == "product_details":
+            product_id = None
+            reference = state.get("product_reference")
+            if reference:
+                product_id = await resolve_product_reference(reference)
+
+            if product_id:
+                product = json.loads(await get_product_impl(product_id))
+                retrieved = (
+                    {"results": [], "count": 0}
+                    if "error" in product
+                    else {"results": [product], "count": 1}
+                )
+            else:
+                retrieved = {"results": [], "count": 0}
+        else:
+            parsed = json.loads(await semantic_search_impl(state.get("input", ""), limit=5))
+            retrieved = {"results": parsed.get("results", []), "count": parsed.get("count", 0)}
+
+        span.update(output={"result_count": retrieved["count"]})
+        return {"retrieved_data": json.dumps(retrieved)}
 
 
 def small_talk_node(state: GraphState) -> Dict[str, Any]:
