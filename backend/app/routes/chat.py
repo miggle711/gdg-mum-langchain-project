@@ -35,6 +35,9 @@ def _authenticated_user_id(request: Request) -> int | None:
     return decode_access_token(token) if token else None
 
 
+_AUTHENTICATED_KEY_PREFIX = "user:"
+
+
 def _conversation_key(session_id: str, user_id: int | None) -> str:
     """Keys conversation history by user_id when authenticated, falling back
     to session_id for guests (#82) — so a logged-in user's conversation
@@ -49,8 +52,18 @@ def _conversation_key(session_id: str, user_id: int | None) -> str:
     authenticated conversation. The prefix makes the two namespaces
     structurally disjoint regardless of what a guest sends, rather than
     relying on session_id's UUID shape as an (unenforced) assumption.
+
+    A guest session_id that itself starts with the reserved "user:" prefix
+    (e.g. a malicious client sending session_id="user:55") is re-namespaced
+    under "guest:" rather than trusted verbatim — otherwise a guest could
+    directly spoof an authenticated user's key and read/write their real
+    conversation history with no valid JWT at all.
     """
-    return f"user:{user_id}" if user_id is not None else session_id
+    if user_id is not None:
+        return f"{_AUTHENTICATED_KEY_PREFIX}{user_id}"
+    if session_id.startswith(_AUTHENTICATED_KEY_PREFIX):
+        return f"guest:{session_id}"
+    return session_id
 
 
 async def get_or_create_conversation(session_id: str) -> ConversationData:

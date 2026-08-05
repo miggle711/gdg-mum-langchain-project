@@ -68,3 +68,14 @@ def test_conversation_key_does_not_collide_when_guest_session_id_matches_a_real_
     guest_key_matching_id = _conversation_key("55", None)
 
     assert authenticated_key != guest_key_matching_id
+
+
+def test_conversation_key_does_not_let_a_guest_spoof_the_authenticated_prefix():
+    """A malicious guest sending session_id="user:55" directly must not be
+    able to produce the same key as an authenticated request for user_id=55
+    (flagged by Copilot review on PR #85)."""
+    authenticated_key = _conversation_key("irrelevant", 55)
+    spoofing_guest_key = _conversation_key("user:55", None)
+
+    assert authenticated_key != spoofing_guest_key
+    assert spoofing_guest_key == "guest:user:55"
