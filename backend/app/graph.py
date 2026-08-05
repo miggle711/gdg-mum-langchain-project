@@ -29,6 +29,8 @@ class GraphState(TypedDict, total=False):
     product_reference: str
     quantity: int
     cart_action_type: CartActionType
+    resolved_product_id: str
+    cart_action_valid: bool
     retrieved_data: str
     response: str
     error: bool
@@ -327,6 +329,97 @@ def route_from_validation(state: GraphState) -> str:
     with langfuse_client.start_as_current_span(
         name="graph.route_from_validation",
         input={"has_results": has_results},
+        output={"route": route},
+        metadata={"component": "langgraph"},
+    ):
+        pass
+
+    return route
+
+
+# --- Cart-action path (CA/CV/EC/CG, #57) ---
+# CA and CV are purely deterministic — no LLM reasoning inside either
+# (decision #4). EC/CG follow in the next step.
+
+MAX_CART_ACTION_QUANTITY = 20
+
+
+async def interpret_cart_action(state: GraphState) -> Dict[str, Any]:
+    """CA: resolves IE's extracted product_reference to a concrete catalog
+    id via resolve_product_reference. quantity/cart_action_type pass
+    through from IE unchanged — CV (next) validates them.
+    """
+    with _start_graph_span("graph.interpret_cart_action", state) as span:
+        product_id = None
+        reference = state.get("product_reference")
+        if reference:
+            product_id = await resolve_product_reference(reference)
+
+        span.update(output={"resolved_product_id": product_id})
+        return {"resolved_product_id": product_id} if product_id else {}
+
+
+async def validate_cart_action(state: GraphState) -> Dict[str, Any]:
+    """CV: the guardrail before any mutation — product exists, the action
+    type is one of add/remove/update_quantity, and quantity is a sane
+    positive number within MAX_CART_ACTION_QUANTITY.
+
+    Since EC (next step) does no LLM reasoning either, this is the only
+    check standing between a possibly-manipulated IE/CA output and a real
+    cart write. Note this guards against unwanted mutations to the
+    requesting user's *own* cart, not cross-user access — session_id is
+    always trusted/HTTP-sourced, never LLM-derived (same as EC), so
+    cross-session mutation isn't possible regardless of what IE/CA produce.
+    """
+    _ensure_backend_on_path()
+    from cart_tools import get_product_impl
+
+    with _start_graph_span("graph.validate_cart_action", state) as span:
+        product_id = state.get("resolved_product_id")
+        action_type = state.get("cart_action_type")
+        quantity = state.get("quantity")
+
+        product_exists = False
+        if product_id:
+            product = json.loads(await get_product_impl(product_id))
+            product_exists = "error" not in product
+
+        if action_type == "remove":
+            quantity_valid = True
+        elif quantity is None:
+            # add_to_cart_impl defaults quantity to 1 when omitted;
+            # update_quantity_impl has no sensible default — it sets an
+            # absolute new total, so an explicit quantity is required.
+            quantity = 1 if action_type == "add" else None
+            quantity_valid = quantity is not None
+        else:
+            quantity_valid = 0 < quantity <= MAX_CART_ACTION_QUANTITY
+
+        valid = (
+            bool(product_id)
+            and product_exists
+            and action_type in ("add", "remove", "update_quantity")
+            and quantity_valid
+        )
+
+        span.update(output={
+            "valid": valid,
+            "product_exists": product_exists,
+            "quantity_valid": quantity_valid,
+        })
+        output: Dict[str, Any] = {"cart_action_valid": valid}
+        if quantity is not None:
+            output["quantity"] = quantity
+        return output
+
+
+def route_from_cart_validation(state: GraphState) -> str:
+    valid = state.get("cart_action_valid", False)
+    route = "execute_cart_action" if valid else "clarify_node"
+
+    with langfuse_client.start_as_current_span(
+        name="graph.route_from_cart_validation",
+        input={"valid": valid},
         output={"route": route},
         metadata={"component": "langgraph"},
     ):
