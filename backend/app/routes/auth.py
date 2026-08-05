@@ -37,8 +37,12 @@ async def signup(body: SignupRequest) -> AuthResponse:
     except HTTPException:
         raise
     except Exception as e:
+        # Unlike other routes in this codebase, auth endpoints deliberately
+        # don't echo str(e) back to the client — a DB error or other
+        # internal detail here could leak more than a product-catalog
+        # route's equivalent would. Full detail still goes to the logs.
         logger.exception("Exception in signup: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
 
 
 @router.post("/auth/login")
@@ -59,4 +63,4 @@ async def login(body: LoginRequest) -> AuthResponse:
         raise
     except Exception as e:
         logger.exception("Exception in login: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
