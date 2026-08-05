@@ -15,10 +15,17 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-Intent = Literal["product_search", "product_details", "cart_action", "clarify", "fallback", "unsafe"]
-ALLOWED_INTENTS = {"product_search", "product_details", "cart_action", "clarify", "fallback", "unsafe"}
+Intent = Literal["product_query", "cart_action", "clarify", "fallback", "unsafe"]
+ALLOWED_INTENTS = {"product_query", "cart_action", "clarify", "fallback", "unsafe"}
 
 CartActionType = Literal["add", "remove", "update_quantity"]
+
+# The catalog's exact category strings (confirmed against the live product
+# index, #57) — used as a hard ES `term` filter, which requires an exact
+# match, so IE is constrained to only ever emit one of these four (or null)
+# rather than free text that could silently fail to match. Update this list
+# if the catalog's categories change.
+ProductCategory = Literal["Electronics", "Home & Kitchen", "Sports & Outdoors", "Toys & Games"]
 
 
 class GraphState(TypedDict, total=False):
@@ -29,6 +36,10 @@ class GraphState(TypedDict, total=False):
     product_reference: str
     quantity: int
     cart_action_type: CartActionType
+    category: ProductCategory
+    price_min: float
+    price_max: float
+    rating_min: float
     resolved_product_id: str
     cart_action_valid: bool
     cart_action_result: str
@@ -46,15 +57,16 @@ _intent_llm = ChatGoogleGenerativeAI(
 
 class IntentEntityExtraction(BaseModel):
     intent: Literal[
-        "product_search", "product_details", "cart_action", "clarify", "fallback", "unsafe"
+        "product_query", "cart_action", "clarify", "fallback", "unsafe"
     ] = Field(description="The best matching intent label for the user's message.")
     product_reference: str | None = Field(
         default=None,
         description=(
             "A short natural-language description of the product being discussed or acted on "
             "(e.g. 'the blue waterproof jacket'), resolved using chat history for follow-ups "
-            "like 'that one' or 'the first one'. Only set for product_details and cart_action "
-            "intents; otherwise null."
+            "like 'that one' or 'the first one'. Set whenever the message points at a specific "
+            "product, for product_query or cart_action intents; null for open-ended browsing "
+            "('show me jackets') or any other intent."
         ),
     )
     quantity: int | None = Field(
@@ -69,6 +81,24 @@ class IntentEntityExtraction(BaseModel):
             "new total. Only set for cart_action intent."
         ),
     )
+    category: ProductCategory | None = Field(
+        default=None,
+        description=(
+            "Set ONLY when the message names one of these exact categories: Electronics, "
+            "Home & Kitchen, Sports & Outdoors, Toys & Games. Never guess a category for a "
+            "brand name, product type, or descriptive query that doesn't literally name one of "
+            "these — leave it null instead. Only relevant for product_query."
+        ),
+    )
+    price_min: float | None = Field(
+        default=None, description="Minimum price mentioned (e.g. 'over $30', 'between $50 and $100'). Only relevant for product_query.",
+    )
+    price_max: float | None = Field(
+        default=None, description="Maximum price mentioned (e.g. 'under $20', 'between $50 and $100'). Only relevant for product_query.",
+    )
+    rating_min: float | None = Field(
+        default=None, description="Minimum star rating mentioned (e.g. 'at least 4.5 stars'). Only relevant for product_query.",
+    )
 
 
 _INTENT_ENTITY_PROMPT = ChatPromptTemplate.from_messages(
@@ -78,24 +108,31 @@ _INTENT_ENTITY_PROMPT = ChatPromptTemplate.from_messages(
             """Classify the user's message into exactly one ecommerce routing intent, and extract minimal entities.
 
 Intents:
-- product_search: browsing/discovery - searching, recommendations, comparisons, filtering by category/price/rating.
-- product_details: asking about one specific, already-identified product (attributes, price, availability, follow-up questions about "it").
+- product_query: anything about products - open-ended browsing/discovery ("show me jackets"), comparisons, or asking about one specific product (attributes, price, availability, follow-ups like "tell me more about that one"). Whether the message is broad or specific, this is the one intent for it.
 - cart_action: adding, removing, or changing the quantity of an item in the cart.
 - clarify: unclear messages that cannot be routed using the current message or chat history.
 - fallback: greetings, thanks, farewells, casual conversation, or anything else unrelated to shopping.
 - unsafe: self-harm, violence, abuse, threats, illegal wrongdoing, or safety-sensitive content.
 
 Rules:
-- Use chat history to resolve follow-ups like "what about one in blue?" or "add that one".
+- Use chat history to resolve follow-ups like "what about one in blue?" or "tell me more about that one".
+- For product_query, set product_reference whenever the message points at one specific product (by name, description, or a follow-up reference); leave it null for open-ended browsing.
+- For product_query, also extract category/price_min/price_max/rating_min whenever the message states an exact constraint. category must be one of exactly: Electronics, Home & Kitchen, Sports & Outdoors, Toys & Games - only set it when the message names one of these; never guess a category for a brand name (e.g. "JBL") or a descriptive/vague query.
 - For cart_action, also set cart_action_type ('add', 'remove', or 'update_quantity'), product_reference, and quantity if mentioned.
-- For product_details and cart_action, set product_reference to a short description of the product, using chat history to resolve vague references.
 - Prefer unsafe whenever safety risk is present, regardless of any other content in the message.
 - Use clarify only when no other intent clearly fits.
 
 Examples:
-- "Show me waterproof jackets under $100" -> product_search
-- "What about one in blue?" after a search -> product_search
-- "Tell me more about that first one" -> product_details, product_reference="the first jacket shown"
+- "electronics under $20" -> product_query, category="Electronics", price_max=20
+- "electronics between $50 and $100" -> product_query, category="Electronics", price_min=50, price_max=100
+- "highly rated electronics, at least 4.5 stars" -> product_query, category="Electronics", rating_min=4.5
+- "home and kitchen items under $15" -> product_query, category="Home & Kitchen", price_max=15
+- "sports and outdoors products above $50 with at least a 4.5 rating" -> product_query, category="Sports & Outdoors", price_min=50, rating_min=4.5
+- "search for JBL products" -> product_query (no category — "JBL" is a brand, not one of the four categories; relies on keyword/semantic matching instead)
+- "something cozy for winter" -> product_query (no category/filters — purely descriptive)
+- "What about one in blue?" after a search -> product_query (no product_reference — still browsing, just refined)
+- "Tell me more about that first one" -> product_query, product_reference="the first jacket shown"
+- "How much is the Sony one?" -> product_query, product_reference="the Sony one"
 - "Add 2 of those to my cart" after viewing a product -> cart_action, cart_action_type="add", product_reference="that product", quantity=2
 - "Remove the blue jacket from my cart" -> cart_action, cart_action_type="remove", product_reference="the blue jacket"
 - "Actually make it 3" after adding an item -> cart_action, cart_action_type="update_quantity", product_reference="that item", quantity=3
@@ -130,13 +167,14 @@ _GROUNDED_RESPONSE_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             """You are a helpful ecommerce customer service assistant. Answer the customer's message using ONLY the product data provided below - do not invent details that aren't present in it.
 
-Product data (JSON):
+Product data (JSON) - "results" is a list of matching products from a broad search; "detail" (if not null) is the full record for one specific product the customer appears to be asking about:
 {retrieved_data}
 
 Guidelines:
 - Be polite, professional, and concise.
+- If "detail" is present and the customer's message reads like they're asking about that one specific product (e.g. "tell me more about...", "how much is...", a follow-up like "that one"), focus your answer on it using its full details rather than the broader "results" list.
+- Otherwise, summarize the most relevant items in "results" rather than listing every field for every item.
 - When describing products, include price, rating, and number of reviews if available.
-- If multiple products are present, briefly summarize the most relevant ones rather than listing every field for every item.
 - Do not mention "JSON" or that you were given data - just answer naturally, as if you already knew this.""",
         ),
         MessagesPlaceholder(variable_name="chat_history", optional=True),
@@ -164,8 +202,8 @@ async def resolve_product_reference(reference: str) -> str | None:
     """Resolve a natural-language product reference (e.g. "the blue jacket")
     to a catalog product_id, via semantic_search_impl's top match.
 
-    Shared by the CA (cart action) and RD/PD (product details) nodes (#57)
-    so reference resolution isn't duplicated between them.
+    Shared by CA (cart action) and RD (retrieve_data's detail-enrichment
+    step) so reference resolution isn't duplicated between them.
 
     tools.py is imported lazily here, not at module level, so importing
     graph.py itself doesn't require tools.py's dependencies (e.g.
@@ -219,67 +257,78 @@ async def extract_intent_and_entities(state: GraphState, config: RunnableConfig 
             intent = "clarify"
 
         output: Dict[str, Any] = {"intent": intent}
-        if intent in ("product_details", "cart_action") and result.product_reference:
+        if intent in ("product_query", "cart_action") and result.product_reference:
             output["product_reference"] = result.product_reference
         if intent == "cart_action":
             if result.quantity is not None:
                 output["quantity"] = result.quantity
             if result.cart_action_type:
                 output["cart_action_type"] = result.cart_action_type
+        if intent == "product_query":
+            if result.category:
+                output["category"] = result.category
+            if result.price_min is not None:
+                output["price_min"] = result.price_min
+            if result.price_max is not None:
+                output["price_max"] = result.price_max
+            if result.rating_min is not None:
+                output["rating_min"] = result.rating_min
 
         span.update(output=output)
         return output
 
 
-async def product_search_node(state: GraphState) -> Dict[str, Any]:
-    """PS (#57): thin pass-through so product-search turns get their own
-    trace span before retrieve_data runs the actual lookup.
-    """
-    with _start_graph_span("graph.product_search_node", state):
-        return {}
-
-
-async def product_details_node(state: GraphState) -> Dict[str, Any]:
-    """PD (#57): thin pass-through, mirrors product_search_node."""
-    with _start_graph_span("graph.product_details_node", state):
-        return {}
-
-
 async def retrieve_data(state: GraphState) -> Dict[str, Any]:
-    """RD (#57): deterministic retrieval, no LLM tool-calling loop (decision
-    #3). product_search hands the raw user text straight to
-    semantic_search_impl, which parses natural-language queries itself
-    (decision #2 — IE doesn't pre-extract filters). product_details instead
-    resolves IE's extracted product_reference to a concrete id first, then
-    does an exact lookup. Both paths normalize their output to the same
-    {"results": [...], "count": n} shape so VR/GR don't need to know which
-    path was taken.
+    """RD: deterministic retrieval, no LLM tool-calling loop (decision #3).
+
+    Does not branch on "search vs details" — that upfront split (an earlier
+    version of this graph) forced a hard commitment before any data was even
+    looked at, which broke on messages that are genuinely both at once (see
+    issue57.md's "redesign: merge product_search/product_details" for the
+    full reasoning and worked examples). Instead, retrieve_data always runs
+    a search on the raw user text — passing through IE's extracted
+    category/price_min/price_max/rating_min as a hard ES filter, since
+    hybrid BM25+vector ranking alone can't enforce those (measured: 0/26
+    anchor products found on the golden set's exact price/rating cases
+    without this, see issue57.md) — and *additionally* fetches a full
+    detail record when IE extracted a product_reference that resolves to a
+    real product. generate_grounded_response (next) decides from the user's
+    actual phrasing whether to focus on the detail or summarize the list —
+    that's where this judgment belongs, since it's the one place that
+    already sees the full question.
     """
     _ensure_backend_on_path()
     from tools import semantic_search_impl
     from cart_tools import get_product_impl
 
     with _start_graph_span("graph.retrieve_data", state) as span:
-        if state.get("intent") == "product_details":
-            product_id = None
-            reference = state.get("product_reference")
-            if reference:
-                product_id = await resolve_product_reference(reference)
+        parsed = json.loads(await semantic_search_impl(
+            state.get("input", ""),
+            limit=5,
+            category=state.get("category"),
+            price_min=state.get("price_min"),
+            price_max=state.get("price_max"),
+            rating_min=state.get("rating_min"),
+        ))
+        results = parsed.get("results", [])
 
+        detail = None
+        reference = state.get("product_reference")
+        if reference:
+            product_id = await resolve_product_reference(reference)
             if product_id:
                 product = json.loads(await get_product_impl(product_id))
-                retrieved = (
-                    {"results": [], "count": 0}
-                    if "error" in product
-                    else {"results": [product], "count": 1}
-                )
-            else:
-                retrieved = {"results": [], "count": 0}
-        else:
-            parsed = json.loads(await semantic_search_impl(state.get("input", ""), limit=5))
-            retrieved = {"results": parsed.get("results", []), "count": parsed.get("count", 0)}
+                if "error" not in product:
+                    detail = product
 
-        span.update(output={"result_count": retrieved["count"]})
+        retrieved = {"results": results, "count": len(results), "detail": detail}
+        span.update(output={
+            "result_count": retrieved["count"],
+            "has_detail": detail is not None,
+            "filters_applied": {
+                k: state.get(k) for k in ("category", "price_min", "price_max", "rating_min") if state.get(k) is not None
+            },
+        })
         return {"retrieved_data": json.dumps(retrieved)}
 
 
@@ -318,13 +367,13 @@ def validate_results(state: GraphState) -> Dict[str, Any]:
     """
     with _start_graph_span("graph.validate_results", state) as span:
         retrieved = json.loads(state.get("retrieved_data") or "{}")
-        span.update(output={"count": retrieved.get("count", 0)})
+        span.update(output={"count": retrieved.get("count", 0), "has_detail": retrieved.get("detail") is not None})
         return {}
 
 
 def route_from_validation(state: GraphState) -> str:
     retrieved = json.loads(state.get("retrieved_data") or "{}")
-    has_results = bool(retrieved.get("results"))
+    has_results = bool(retrieved.get("results")) or bool(retrieved.get("detail"))
     route = "generate_grounded_response" if has_results else "clarify_node"
 
     with langfuse_client.start_as_current_span(
@@ -498,10 +547,8 @@ async def clarify_node(state: GraphState) -> Dict[str, Any]:
 def route_from_intent(state: GraphState) -> str:
     intent = state.get("intent", "clarify")
 
-    if intent == "product_search":
-        route = "product_search_node"
-    elif intent == "product_details":
-        route = "product_details_node"
+    if intent == "product_query":
+        route = "retrieve_data"
     elif intent == "cart_action":
         route = "interpret_cart_action"
     elif intent == "unsafe":
@@ -526,8 +573,6 @@ def build_chat_graph():
     workflow = StateGraph(GraphState)
 
     workflow.add_node("extract_intent_and_entities", extract_intent_and_entities)
-    workflow.add_node("product_search_node", product_search_node)
-    workflow.add_node("product_details_node", product_details_node)
     workflow.add_node("retrieve_data", retrieve_data)
     workflow.add_node("validate_results", validate_results)
     workflow.add_node("generate_grounded_response", generate_grounded_response)
@@ -545,8 +590,6 @@ def build_chat_graph():
         route_from_intent,
     )
 
-    workflow.add_edge("product_search_node", "retrieve_data")
-    workflow.add_edge("product_details_node", "retrieve_data")
     workflow.add_edge("retrieve_data", "validate_results")
     workflow.add_conditional_edges(
         "validate_results",

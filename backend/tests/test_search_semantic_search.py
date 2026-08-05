@@ -102,3 +102,106 @@ async def test_reranker_receives_query_paired_with_name_and_description(mocker, 
 
     pairs = mock_reranker.predict.call_args.args[0]
     assert pairs == [("headphones", "Wireless Headphones. Noise cancelling")]
+
+
+# --- Hard filters (#57) — category/price_min/price_max/rating_min ---
+# semantic_search's hybrid BM25+vector scoring has no way to enforce a hard
+# constraint like "price <= $20"; #57's golden-set check measured this
+# directly (0/26 anchor products found on pure price/rating queries without
+# a filter). These tests cover the filter clause + rating/reviews sort
+# override that closes that gap.
+
+async def test_filters_map_to_es_range_and_term_clauses(mocker, mock_es, mock_reranker):
+    mocker.patch("cache.get_cached_search", return_value=None)
+    mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [])
+
+    await semantic_search(
+        "query", [0.1] * 768, limit=5,
+        filters={"category": "Electronics", "price_min": 50, "price_max": 100, "rating_min": 4.5},
+    )
+
+    body = mock_es.search.call_args.kwargs["body"]
+    filter_clauses = body["query"]["bool"]["filter"]
+    assert {"term": {"category": "Electronics"}} in filter_clauses
+    assert {"range": {"price": {"gte": 50}}} in filter_clauses
+    assert {"range": {"price": {"lte": 100}}} in filter_clauses
+    assert {"range": {"rating": {"gte": 4.5}}} in filter_clauses
+
+
+async def test_filters_add_rating_reviews_sort_override(mocker, mock_es, mock_reranker):
+    # A query like "electronics under $20" has almost no descriptive content
+    # for BM25/vector relevance to rank against, so filtered results are
+    # explicitly sorted by rating/reviews instead of left to relevance score
+    # — matching query_products_impl's already-validated convention.
+    mocker.patch("cache.get_cached_search", return_value=None)
+    mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [])
+
+    await semantic_search("query", [0.1] * 768, limit=5, filters={"category": "Electronics"})
+
+    body = mock_es.search.call_args.kwargs["body"]
+    assert body["sort"] == [{"rating": "desc"}, {"reviews": "desc"}]
+
+
+async def test_no_filters_no_sort_override(mocker, mock_es, mock_reranker):
+    mocker.patch("cache.get_cached_search", return_value=None)
+    mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [])
+
+    await semantic_search("query", [0.1] * 768, limit=5)
+
+    body = mock_es.search.call_args.kwargs["body"]
+    assert "sort" not in body
+    assert "filter" not in body["query"]["bool"]
+
+
+async def test_filtered_query_bypasses_cache_entirely(mocker, mock_es, mock_reranker):
+    # get_cached_search/set_cached_search key purely on embedding similarity
+    # with no filter dimension — "electronics under $20" and "electronics
+    # under $1000" have near-identical embeddings but very different
+    # correct results, so a filtered query must never hit or populate it.
+    get_cached = mocker.patch("cache.get_cached_search")
+    set_cached = mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([
+        _hit(id="p1", name="Widget", description="desc", price=10, rating=4.0, reviews=5, category="Electronics"),
+    ])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.5])
+
+    await semantic_search("query", [0.1] * 768, limit=5, filters={"category": "Electronics"})
+
+    get_cached.assert_not_called()
+    set_cached.assert_not_called()
+
+
+async def test_filtered_results_preserve_es_sort_order_not_rerank_order(mocker, mock_es, mock_reranker):
+    # ES already returns candidates correctly ordered by rating/reviews
+    # (via the sort override) — the cross-encoder still scores each result
+    # for display, but must NOT re-sort by that score and undo the order.
+    mocker.patch("cache.get_cached_search", return_value=None)
+    mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([
+        _hit(id="best-rated", name="Best rated", description="desc", price=10, rating=5.0, reviews=50, category="Electronics"),
+        _hit(id="second", name="Second", description="desc", price=15, rating=4.5, reviews=20, category="Electronics"),
+    ])
+    # Reranker scores would suggest the opposite order if used for sorting.
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [0.1, 0.9])
+
+    results = await semantic_search("electronics under $20", [0.1] * 768, limit=5, filters={"category": "Electronics", "price_max": 20})
+
+    assert [r["id"] for r in results] == ["best-rated", "second"]
+
+
+async def test_filters_partial_only_applies_given_fields(mocker, mock_es, mock_reranker):
+    mocker.patch("cache.get_cached_search", return_value=None)
+    mocker.patch("cache.set_cached_search")
+    mock_es.search.return_value = _es_response([])
+    mock_reranker.predict.return_value = mocker.MagicMock(tolist=lambda: [])
+
+    await semantic_search("query", [0.1] * 768, limit=5, filters={"price_max": 20})
+
+    filter_clauses = mock_es.search.call_args.kwargs["body"]["query"]["bool"]["filter"]
+    assert filter_clauses == [{"range": {"price": {"lte": 20}}}]

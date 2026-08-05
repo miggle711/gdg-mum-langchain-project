@@ -4,7 +4,7 @@ A LangGraph-routed ecommerce customer service chatbot: an Angular frontend, a Fa
 
 ## Overview
 
-The backend exposes a LangGraph chat workflow that classifies each user turn into one of six intents in a single AI call — `product_search`, `product_details`, `cart_action`, `clarify`, `fallback`, or `unsafe` (safety checking is folded into this same routing call, not a separate step) — then routes to a deterministic pipeline for that branch. Product search/details turns retrieve real catalog data before an AI call writes a grounded reply; cart-action turns (add/remove/update quantity) run entirely deterministically after routing, with an explicit validation step guarding against invalid products/quantities before anything mutates the database — see `backend/app/graph.py` and [ARCHITECTURE101.md](ARCHITECTURE101.md) for the full node-by-node breakdown. Conversation history and summaries live in Redis so the app stays stateful across requests without keeping anything in process memory. Every chat call is traced in Langfuse, and users can leave thumbs up/down feedback tied to that trace.
+The backend exposes a LangGraph chat workflow that classifies each user turn into one of five intents in a single AI call — `product_query`, `cart_action`, `clarify`, `fallback`, or `unsafe` (safety checking is folded into this same routing call, not a separate step) — then routes to a deterministic pipeline for that branch. `product_query` turns always retrieve real catalog data (a broad search — with hard category/price/rating filters applied when the message states them exactly — plus a specific product's full details if one was referenced) before an AI call writes a grounded reply, focusing on whichever the user actually asked for; cart-action turns (add/remove/update quantity) run entirely deterministically after routing, with an explicit validation step guarding against invalid products/quantities before anything mutates the database — see `backend/app/graph.py` and [ARCHITECTURE101.md](ARCHITECTURE101.md) for the full node-by-node breakdown. Conversation history and summaries live in Redis so the app stays stateful across requests without keeping anything in process memory. Every chat call is traced in Langfuse, and users can leave thumbs up/down feedback tied to that trace.
 
 Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch candidates, a cross-encoder reranks them for relevance, and a Redis vector index caches results by query embedding so near-duplicate questions skip the expensive path.
 
@@ -36,8 +36,8 @@ Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch can
 1. **Frontend** calls `POST /session/start` on load; the backend generates a `session_id` and returns a welcome message.
 2. **Frontend** sends each user message to `POST /chat` (or `/chat/stream`) with that `session_id`.
 3. **Backend** loads prior messages for that conversation from Redis, summarising older turns once the history passes a configurable threshold (`conversations.py`'s `maybe_summarise`), then invokes `chat_graph` with the user's message and recent history.
-4. **LangGraph** (`extract_intent_and_entities`) classifies the turn into one of six branches in a single AI call, extracting minimal entities (product reference, quantity, cart action type) alongside the intent:
-   - `product_search` / `product_details` — deterministically retrieve real catalog data (`retrieve_data`), then an AI call writes a reply grounded in that data (`generate_grounded_response`)
+4. **LangGraph** (`extract_intent_and_entities`) classifies the turn into one of five branches in a single AI call, extracting minimal entities (product reference, quantity, cart action type) alongside the intent:
+   - `product_query` — deterministically retrieves real catalog data (`retrieve_data`: always a broad search — with `category`/`price_min`/`price_max`/`rating_min` applied as a hard filter when extracted — plus a specific product's full details if `product_reference` resolves), then an AI call writes a reply grounded in that data (`generate_grounded_response`), focusing on the detail or summarizing the results depending on how the user phrased the question
    - `cart_action` — deterministically resolves the referenced product and validates it (product exists, quantity sane) *before* mutating the cart; no AI call after routing
    - `unsafe` — safety-sensitive messages, handled without any tool/data access
    - `fallback` — casual conversation / anything else out of scope
@@ -53,15 +53,12 @@ flowchart TB
     IE -->|unsafe| SR["sensitive_node"]
     IE -->|fallback| FW["small_talk_node"]
     IE -->|clarify| CL["clarify_node"]
-    IE -->|product_search| PS["product_search_node"]
-    IE -->|product_details| PD["product_details_node"]
+    IE -->|product_query| RD["retrieve_data"]
     IE -->|cart_action| CA["interpret_cart_action"]
 
-    PS --> RD["retrieve_data"]
-    PD --> RD
     RD --> VR["validate_results"]
-    VR -->|has results| GR["generate_grounded_response"]
-    VR -->|no results| CL
+    VR -->|found something| GR["generate_grounded_response"]
+    VR -->|found nothing| CL
 
     CA --> CV["validate_cart_action"]
     CV -->|valid| EC["execute_cart_action"]
@@ -75,19 +72,25 @@ flowchart TB
     CG --> END
 ```
 
-Every intent has a real, purpose-built destination — search/details retrieve real data before an AI call describes it, and cart actions run deterministically (no AI tool-calling loop) with an explicit validation guardrail before any mutation. See [ARCHITECTURE101.md](ARCHITECTURE101.md) for a full walkthrough of each node. (`sensitive_node`/`small_talk_node`/`clarify_node` currently return static placeholder text pending further polish.)
+Every intent has a real, purpose-built destination — `product_query` retrieves real data (always a search, plus a specific product's details when referenced) before an AI call describes it, and cart actions run deterministically (no AI tool-calling loop) with an explicit validation guardrail before any mutation. See [ARCHITECTURE101.md](ARCHITECTURE101.md) for a full walkthrough of each node. (`sensitive_node`/`small_talk_node`/`clarify_node` currently return static placeholder text pending further polish.)
 
 ### Search pipeline (`backend/search.py`, `backend/cache.py`)
 
 ```mermaid
 flowchart TD
-    Q[Query embedding] --> C{Redis semantic cache<br/>KNN cosine lookup}
+    Q[Query embedding + optional filters] --> F{category/price/rating<br/>filters present?}
+    F -->|no| C{Redis semantic cache<br/>KNN cosine lookup}
     C -->|hit: distance within threshold| R1[Return cached results]
-    C -->|miss| ES[Elasticsearch hybrid query<br/>BM25 multi_match boost 0.5<br/>+ kNN on embedding boost 4.0]
-    ES --> CE[Cross-encoder reranks candidates<br/>query, name+description pairs]
+    C -->|miss| ES1[Elasticsearch hybrid query<br/>BM25 multi_match boost 0.5<br/>+ kNN on embedding boost 4.0<br/>ranked by relevance score]
+    F -->|yes: cache bypassed| ES2[Elasticsearch hybrid query<br/>+ hard filter clause<br/>sorted by rating desc, reviews desc]
+    ES1 --> CE[Cross-encoder reranks candidates<br/>query, name+description pairs]
+    ES2 --> CE2[Cross-encoder scores candidates<br/>for display only — order already fixed]
     CE --> Cache[Cache top-N results in Redis<br/>keyed by query embedding]
     Cache --> R2[Return results]
+    CE2 --> R3[Return results, rating-sorted]
 ```
+
+Filters bypass the semantic cache entirely — it keys purely on embedding similarity with no filter dimension, so "electronics under $20" and "electronics under $1000" (near-identical embeddings) could otherwise share a wrong cached result. Filtered results are sorted by rating/reviews rather than relevance score, since a query like "electronics under $20" has almost no descriptive text for BM25/vector similarity to usefully rank against (measured: without this, hybrid search found 0 of 26 expected products on exact price/rating queries in the team's eval set — see `issue57.md`).
 
 Product and review embeddings are generated once at index time (`backend/scripts/seed_elasticsearch.py`, reading from Postgres); query embeddings are generated per-request in `backend/tools.py`. Both use the same BGE model with matching (but asymmetric) instruction prefixes — `"Represent this product/review for retrieval: ..."` for documents, `"Represent this sentence for searching relevant passages: ..."` for queries — and both normalize embeddings so cosine similarity is meaningful.
 
@@ -123,10 +126,10 @@ sequenceDiagram
     BE->>LF: start request-level span
     BE->>Graph: invoke(input, chat_history, session_id, callbacks=[Langfuse handler])
     Graph->>Graph: extract_intent_and_entities<br/>(routing + safety + entities, 1 AI call)
-    alt product_search / product_details
-        Graph->>Data: retrieve_data (direct function calls, no AI tool-picking)
-        Data-->>Graph: product results
-        Note over Graph: no results -> clarify_node instead
+    alt product_query
+        Graph->>Data: retrieve_data - always search, plus a specific<br/>product's details if product_reference resolves
+        Data-->>Graph: results list + optional detail record
+        Note over Graph: nothing found -> clarify_node instead
         Graph->>Graph: generate_grounded_response (1 AI call)
     else cart_action
         Graph->>Data: resolve product reference + validate<br/>(product exists, quantity sane)
@@ -160,9 +163,9 @@ It does not currently stream token-by-token model output.
 
 ## Features
 
-- LangGraph-based intent routing across product search/details, cart actions, unsafe, fallback, and clarify branches — safety checking folded into the same routing call, not a separate step
-- Deterministic product search/cart-action pipelines over a real product catalog (direct function calls, not an AI tool-calling loop), with an explicit validation guardrail before any cart mutation
-- Hybrid lexical + semantic product search with cross-encoder reranking
+- LangGraph-based intent routing across product queries, cart actions, unsafe, fallback, and clarify branches — safety checking folded into the same routing call, not a separate step
+- Deterministic product-query/cart-action pipelines over a real product catalog (direct function calls, not an AI tool-calling loop), with an explicit validation guardrail before any cart mutation
+- Hybrid lexical + semantic product search with cross-encoder reranking, plus hard category/price/rating filters (rating/reviews-sorted, bypassing the semantic cache) when the message states exact constraints
 - Semantic response caching in Redis (near-duplicate queries skip search entirely)
 - Server-side conversation history in Redis with automatic summarisation for long conversations
 - SSE-compatible chat responses via `/chat/stream` (`trace_id` -> `text` -> `[DONE]`)
@@ -254,7 +257,7 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 ## Development Notes
 
 - Conversations are stored in Redis with a TTL (`conversation_ttl_seconds`, default 24h) — they survive backend restarts but expire eventually, not "forever."
-- LangGraph now owns the full pipeline for every branch, not just routing — product search/details and cart actions no longer delegate to an AI tool-calling loop; see `backend/app/graph.py` and [ARCHITECTURE101.md](ARCHITECTURE101.md#10-the-ai-pipeline-backendappgraphpy--the-heart-of-the-system). `backend/app/agent.py`'s old tool-calling loop (`AgentExecutorAdapter`) is no longer called by the graph and is pending removal — only `_llm`/`langfuse_client` from that file are still used, by `app/routes/chat.py`.
+- LangGraph now owns the full pipeline for every branch, not just routing — product queries and cart actions no longer delegate to an AI tool-calling loop; see `backend/app/graph.py` and [ARCHITECTURE101.md](ARCHITECTURE101.md#10-the-ai-pipeline-backendappgraphpy--the-heart-of-the-system). `backend/app/agent.py`'s old tool-calling loop (`AgentExecutorAdapter`) has been removed (155 lines → 27) — only `_llm`/`langfuse_client` from that file remain, still used by `app/routes/chat.py`.
 - Prompts now live in `backend/app/graph.py` (`_INTENT_ENTITY_PROMPT` for routing/entity extraction, `_GROUNDED_RESPONSE_PROMPT` for product replies), not hardcoded per-request.
 - `small_talk_node`, `sensitive_node`, and `clarify_node` currently return static placeholder text and should be refined before treating them as production-quality conversational flows.
 - Elasticsearch and Redis indices are created automatically on backend startup if they don't already exist (`init_es_index`, `init_cache_index`) — this happens synchronously at import time, so the backend will fail to start if either service is unreachable.

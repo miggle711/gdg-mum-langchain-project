@@ -93,6 +93,26 @@ async def test_semantic_search_impl_defaults_limit_to_5_when_none(mocker, tools_
     assert mock_search.call_args.kwargs["limit"] == 5
 
 
+async def test_semantic_search_impl_passes_filters_through(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mock_search = mocker.patch("tools.semantic_search", return_value=[])
+
+    await tools_module.semantic_search_impl(
+        "electronics under $20", category="Electronics", price_max=20,
+    )
+
+    assert mock_search.call_args.kwargs["filters"] == {"category": "Electronics", "price_max": 20}
+
+
+async def test_semantic_search_impl_passes_filters_none_when_no_filters_given(mocker, tools_module, mock_embedding_model):
+    mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
+    mock_search = mocker.patch("tools.semantic_search", return_value=[])
+
+    await tools_module.semantic_search_impl("cozy blanket")
+
+    assert mock_search.call_args.kwargs["filters"] is None
+
+
 async def test_semantic_search_impl_formats_similarity_as_percent(mocker, tools_module, mock_embedding_model):
     mock_embedding_model.encode.return_value = mocker.MagicMock(tolist=lambda: [0.1] * 768)
     mocker.patch("tools.semantic_search", return_value=[{

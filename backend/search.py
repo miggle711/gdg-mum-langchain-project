@@ -211,40 +211,86 @@ async def get_categories() -> List[Dict[str, Any]]:
     return [{"name": b["key"], "icon": "📦"} for b in buckets]
 
 
-async def semantic_search(query_text: str, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+async def semantic_search(
+    query_text: str,
+    query_embedding: List[float],
+    limit: int = 5,
+    filters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """filters (optional): category/price_min/price_max/rating_min, applied
+    as a hard ES `filter` clause alongside the existing BM25+kNN `should`
+    clauses — so results are still semantically ranked, but only among
+    candidates that satisfy the filter. Hybrid BM25+vector scoring alone
+    can't enforce a hard constraint like "price <= $20" (#57's golden-set
+    check measured 0/26 anchor products found on pure price/rating queries
+    without this); this is what closes that gap.
+    """
     from cache import get_cached_search, set_cached_search
-    logger.info("semantic_search called: query='%s', limit=%d", query_text, limit)
+    logger.info("semantic_search called: query='%s', limit=%d, filters=%s", query_text, limit, filters)
 
-    cached = await get_cached_search(query_embedding)
-    if cached is not None:
-        search_cache_hits.inc()
-        return cached[:limit]
+    # Filtered queries bypass the semantic cache entirely. get_cached_search
+    # keys purely on embedding-similarity (KNN over query embeddings), with
+    # no filter dimension — "electronics under $20" and "electronics under
+    # $1000" have near-identical embeddings but very different correct
+    # results, so letting a filtered query hit/populate this cache risks
+    # silently ignoring the filter on a cache hit.
+    use_cache = not filters
+    if use_cache:
+        cached = await get_cached_search(query_embedding)
+        if cached is not None:
+            search_cache_hits.inc()
+            return cached[:limit]
+        search_cache_misses.inc()
 
-    search_cache_misses.inc()
     es = get_es()
     candidates_size = max(20, limit * 4)
 
-    t0 = time.perf_counter()
-    response = await es.search(index=ES_INDEX, body={
+    bool_query: Dict[str, Any] = {
+        "should": [
+            {"multi_match": {
+                "query": query_text,
+                "fields": ["name^2", "description"],
+                "boost": 0.5,
+            }},
+            {"knn": {
+                "field": "embedding",
+                "query_vector": query_embedding,
+                "num_candidates": 50,
+                "boost": 4.0,
+            }},
+        ]
+    }
+    filter_clauses = []
+    if filters:
+        if filters.get("category"):
+            filter_clauses.append({"term": {"category": filters["category"]}})
+        if filters.get("price_min") is not None:
+            filter_clauses.append({"range": {"price": {"gte": filters["price_min"]}}})
+        if filters.get("price_max") is not None:
+            filter_clauses.append({"range": {"price": {"lte": filters["price_max"]}}})
+        if filters.get("rating_min") is not None:
+            filter_clauses.append({"range": {"rating": {"gte": filters["rating_min"]}}})
+    if filter_clauses:
+        bool_query["filter"] = filter_clauses
+
+    search_body: Dict[str, Any] = {
         "size": candidates_size,
-        "query": {
-            "bool": {
-                "should": [
-                    {"multi_match": {
-                        "query": query_text,
-                        "fields": ["name^2", "description"],
-                        "boost": 0.5,
-                    }},
-                    {"knn": {
-                        "field": "embedding",
-                        "query_vector": query_embedding,
-                        "num_candidates": 50,
-                        "boost": 4.0,
-                    }},
-                ]
-            }
-        }
-    })
+        "query": {"bool": bool_query},
+    }
+    # When a hard filter is active, sort by rating/reviews instead of text
+    # relevance — matching query_products_impl's already-validated
+    # convention (its own explicit sort). A query like "electronics under
+    # $20" has almost no descriptive content for BM25/vector similarity to
+    # rank against, so relevance-to-query-text ordering surfaces close to
+    # arbitrary results within the filtered set even though the filter
+    # itself is correct. #57's golden-set check measured this directly:
+    # filtering alone only found 6/33 anchor products; adding this sort
+    # override brought it in line with query_products_impl's 27/33.
+    if filter_clauses:
+        search_body["sort"] = [{"rating": "desc"}, {"reviews": "desc"}]
+
+    t0 = time.perf_counter()
+    response = await es.search(index=ES_INDEX, body=search_body)
     es_search_latency.observe(time.perf_counter() - t0)
 
     candidates = []
@@ -259,7 +305,10 @@ async def semantic_search(query_text: str, query_embedding: List[float], limit: 
             "rating": src["rating"],
             "reviews": src["reviews"],
             "category_name": src["category"],
-            "es_score": round(hit["_score"], 3),
+            # ES doesn't compute _score when an explicit "sort" overrides
+            # relevance ordering (the filtered path above) unless
+            # track_scores is requested, which we don't need here.
+            "es_score": round(hit["_score"], 3) if hit["_score"] is not None else None,
         })
 
     if not candidates:
@@ -281,13 +330,21 @@ async def semantic_search(query_text: str, query_embedding: List[float], limit: 
     for candidate, score in zip(candidates, scores):
         candidate["similarity"] = round(score, 3)
 
-    candidates.sort(key=lambda x: x["similarity"], reverse=True)
-    results = candidates[:limit]
+    if filter_clauses:
+        # Already correctly ordered by rating/reviews via the ES sort above
+        # — keep that order. Cross-encoder similarity is still attached to
+        # each result (useful, informational), but re-sorting by it here
+        # would undo the ordering fix.
+        results = candidates[:limit]
+    else:
+        candidates.sort(key=lambda x: x["similarity"], reverse=True)
+        results = candidates[:limit]
 
     for r in results:
         del r["description"]
 
-    await set_cached_search(query_text, query_embedding, results)
+    if use_cache:
+        await set_cached_search(query_text, query_embedding, results)
     logger.info("semantic_search returned %d results after reranking", len(results))
     return results
 

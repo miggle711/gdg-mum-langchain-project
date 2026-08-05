@@ -16,6 +16,10 @@ class QueryProductsInput(BaseModel):
 class SemanticSearchInput(BaseModel):
     query: str = Field(description="Natural language description of what the customer is looking for")
     limit: Optional[int] = Field(5, description="Number of results to return")
+    category: Optional[str] = Field(None, description="Category name, e.g. 'Electronics', for a hard filter")
+    price_min: Optional[float] = Field(None, description="Minimum price, for a hard filter")
+    price_max: Optional[float] = Field(None, description="Maximum price, for a hard filter")
+    rating_min: Optional[float] = Field(None, description="Minimum rating out of 5, for a hard filter")
 
 
 class SearchReviewsInput(BaseModel):
@@ -65,12 +69,24 @@ async def query_products_impl(
         return json.dumps({"error": str(e), "results": []})
 
 
-async def semantic_search_impl(query: str, limit: Optional[int] = 5) -> str:
+async def semantic_search_impl(
+    query: str,
+    limit: Optional[int] = 5,
+    category: Optional[str] = None,
+    price_min: Optional[float] = None,
+    price_max: Optional[float] = None,
+    rating_min: Optional[float] = None,
+) -> str:
     try:
         # BGE models perform better with this instruction prefix for retrieval queries
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
         embedding = search.get_embedding_model().encode(prefixed_query, normalize_embeddings=True).tolist()
-        results = await semantic_search(query, embedding, limit=limit or 5)
+        filters = {
+            k: v for k, v in {
+                "category": category, "price_min": price_min, "price_max": price_max, "rating_min": rating_min,
+            }.items() if v is not None
+        }
+        results = await semantic_search(query, embedding, limit=limit or 5, filters=filters or None)
 
         if not results:
             return json.dumps({"results": [], "message": "No similar products found"})

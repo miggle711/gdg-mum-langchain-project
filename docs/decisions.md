@@ -44,3 +44,12 @@ This document will keep track of major architectural decisions made by the dev t
   - branch routing
   - terminal graph nodes
 - This makes each request traceable even when no product tools are called.
+
+## Restructure to a deterministic, cart-capable graph (#57)
+
+- Replaced the 4-intent classifier (`product_details`/`small_talk`/`sensitive_topic`/`clarify`) with a single `extract_intent_and_entities` call producing 5 intents: `product_query`, `cart_action`, `clarify`, `fallback`, `unsafe`.
+- Safety folded into this same routing call rather than a dedicated node — no incident motivating a stricter posture, and a separate call would double AI cost on every message to catch a rare case.
+- The old free-form `AgentExecutorAdapter` tool-calling loop in `backend/app/agent.py` (product queries previously delegated to it) was removed entirely — `retrieve_data`/`execute_cart_action` now call `tools.py`/`cart_tools.py` functions directly, deterministically, no LLM picking tools mid-conversation.
+- Added a cart-action pipeline (`interpret_cart_action` → `validate_cart_action` → `execute_cart_action` → `generate_cart_confirmation`) with an explicit validation guardrail (product exists, quantity sane) before any cart mutation — zero AI calls after routing.
+- `product_search`/`product_details` initially shipped as two separate intents, then merged into one (`product_query`) after the two-intent split proved to be a hard, unrecoverable upfront guess that broke on follow-up questions and mixed messages. `retrieve_data` now always searches and additionally fetches a specific product's detail record when referenced, letting the final reply-writing step decide how to answer from the user's actual phrasing.
+- Added hard filter support (`category`/`price_min`/`price_max`/`rating_min`) to the search path, decided by actually measuring against `golden_dataset.json` (the team's pre-existing eval set) rather than by argument alone: unfiltered search found 0/26 anchor products on exact price/rating queries; filtering plus a rating/reviews sort override (matching `query_products_impl`'s already-validated convention, since filtered queries often have too little descriptive text for relevance ranking to work with) brought that to 26/33 (79%), against the old exact-filter tool's 27/33 (82%) on the same cases.

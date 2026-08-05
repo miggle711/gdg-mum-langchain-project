@@ -15,8 +15,8 @@ from langchain_core.messages import HumanMessage
 _HAS_REAL_GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").startswith("AIza")
 
 LIVE_LLM_INTENT_CASES = [
-    ("Do you have any running shoes under $80?", "product_search"),
-    ("Can you compare the best laptops for college?", "product_search"),
+    ("Do you have any running shoes under $80?", "product_query"),
+    ("Can you compare the best laptops for college?", "product_query"),
     ("Hey there, how's your day going?", "fallback"),
     ("Thanks, that's all I needed today.", "fallback"),
     ("I want to hurt someone who scammed me.", "unsafe"),
@@ -29,18 +29,18 @@ async def test_extract_intent_and_entities_routes_known_prompts(mocker):
 
     mock_extractor = mocker.Mock()
     mock_extractor.ainvoke = AsyncMock(side_effect=[
-        graph.IntentEntityExtraction(intent="product_search"),
+        graph.IntentEntityExtraction(intent="product_query"),
         graph.IntentEntityExtraction(intent="fallback"),
         graph.IntentEntityExtraction(intent="unsafe"),
-        graph.IntentEntityExtraction(intent="product_search"),
+        graph.IntentEntityExtraction(intent="product_query"),
         graph.IntentEntityExtraction(intent="clarify"),
     ])
     mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
 
-    assert (await graph.extract_intent_and_entities({"input": "Do you have any running shoes under $80?"}))["intent"] == "product_search"
+    assert (await graph.extract_intent_and_entities({"input": "Do you have any running shoes under $80?"}))["intent"] == "product_query"
     assert (await graph.extract_intent_and_entities({"input": "Hey there, how's your day going?"}))["intent"] == "fallback"
     assert (await graph.extract_intent_and_entities({"input": "I want to hurt someone who scammed me."}))["intent"] == "unsafe"
-    assert (await graph.extract_intent_and_entities({"input": "Can you compare the best laptops for college?"}))["intent"] == "product_search"
+    assert (await graph.extract_intent_and_entities({"input": "Can you compare the best laptops for college?"}))["intent"] == "product_query"
 
     history_state = {
         "input": "What about one in blue?",
@@ -52,6 +52,65 @@ async def test_extract_intent_and_entities_routes_known_prompts(mocker):
         "input": "What about one in blue?",
         "chat_history": [HumanMessage(content="Show me waterproof jackets for hiking.")],
     }
+
+
+async def test_extract_intent_and_entities_returns_product_query_reference(mocker):
+    import app.graph as graph
+
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(return_value=graph.IntentEntityExtraction(
+        intent="product_query",
+        product_reference="the Sony ones",
+    ))
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
+
+    result = await graph.extract_intent_and_entities({"input": "Tell me more about the Sony ones"})
+
+    assert result == {"intent": "product_query", "product_reference": "the Sony ones"}
+
+
+async def test_extract_intent_and_entities_product_query_without_reference_omits_it(mocker):
+    import app.graph as graph
+
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(return_value=graph.IntentEntityExtraction(intent="product_query"))
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
+
+    result = await graph.extract_intent_and_entities({"input": "Show me waterproof jackets"})
+
+    assert result == {"intent": "product_query"}
+
+
+async def test_extract_intent_and_entities_returns_product_query_filters(mocker):
+    import app.graph as graph
+
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(return_value=graph.IntentEntityExtraction(
+        intent="product_query", category="Electronics", price_max=20,
+    ))
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
+
+    result = await graph.extract_intent_and_entities({"input": "electronics under $20"})
+
+    assert result == {"intent": "product_query", "category": "Electronics", "price_max": 20}
+
+
+async def test_extract_intent_and_entities_filters_only_set_for_product_query(mocker):
+    import app.graph as graph
+
+    # IntentEntityExtraction shouldn't ever populate filter fields for other
+    # intents in practice, but extract_intent_and_entities should ignore
+    # them defensively either way, matching how it already guards
+    # product_reference/quantity/cart_action_type per-intent.
+    mock_extractor = mocker.Mock()
+    mock_extractor.ainvoke = AsyncMock(return_value=graph.IntentEntityExtraction(
+        intent="fallback", category="Electronics", price_max=20,
+    ))
+    mocker.patch.object(graph, "_intent_entity_extractor", mock_extractor)
+
+    result = await graph.extract_intent_and_entities({"input": "hey there"})
+
+    assert result == {"intent": "fallback"}
 
 
 async def test_extract_intent_and_entities_returns_cart_action_entities(mocker):
@@ -124,8 +183,7 @@ def test_graph_compiles():
 def test_route_from_intent_routes_each_intent_to_the_expected_node():
     import app.graph as graph
 
-    assert graph.route_from_intent({"intent": "product_search"}) == "product_search_node"
-    assert graph.route_from_intent({"intent": "product_details"}) == "product_details_node"
+    assert graph.route_from_intent({"intent": "product_query"}) == "retrieve_data"
     assert graph.route_from_intent({"intent": "cart_action"}) == "interpret_cart_action"
     assert graph.route_from_intent({"intent": "unsafe"}) == "sensitive_node"
     assert graph.route_from_intent({"intent": "fallback"}) == "small_talk_node"
@@ -158,4 +216,4 @@ async def test_extract_intent_and_entities_with_live_llm_uses_chat_history():
         "chat_history": [HumanMessage(content="Show me waterproof jackets for hiking.")],
     }
 
-    assert (await graph.extract_intent_and_entities(state))["intent"] == "product_search"
+    assert (await graph.extract_intent_and_entities(state))["intent"] == "product_query"
