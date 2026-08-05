@@ -498,15 +498,12 @@ async def clarify_node(state: GraphState) -> Dict[str, Any]:
 def route_from_intent(state: GraphState) -> str:
     intent = state.get("intent", "clarify")
 
-    # TEMPORARY (#57): CA/CV/EC/CG don't exist yet, so cart_action has
-    # nowhere real to go — clarify_node is a safe placeholder until the
-    # cart-action nodes are built (next step).
     if intent == "product_search":
         route = "product_search_node"
     elif intent == "product_details":
         route = "product_details_node"
     elif intent == "cart_action":
-        route = "clarify_node"
+        route = "interpret_cart_action"
     elif intent == "unsafe":
         route = "sensitive_node"
     elif intent == "fallback":
@@ -534,6 +531,10 @@ def build_chat_graph():
     workflow.add_node("retrieve_data", retrieve_data)
     workflow.add_node("validate_results", validate_results)
     workflow.add_node("generate_grounded_response", generate_grounded_response)
+    workflow.add_node("interpret_cart_action", interpret_cart_action)
+    workflow.add_node("validate_cart_action", validate_cart_action)
+    workflow.add_node("execute_cart_action", execute_cart_action)
+    workflow.add_node("generate_cart_confirmation", generate_cart_confirmation)
     workflow.add_node("small_talk_node", small_talk_node)
     workflow.add_node("sensitive_node", sensitive_node)
     workflow.add_node("clarify_node", clarify_node)
@@ -552,7 +553,15 @@ def build_chat_graph():
         route_from_validation,
     )
 
+    workflow.add_edge("interpret_cart_action", "validate_cart_action")
+    workflow.add_conditional_edges(
+        "validate_cart_action",
+        route_from_cart_validation,
+    )
+    workflow.add_edge("execute_cart_action", "generate_cart_confirmation")
+
     workflow.add_edge("generate_grounded_response", END)
+    workflow.add_edge("generate_cart_confirmation", END)
     workflow.add_edge("small_talk_node", END)
     workflow.add_edge("sensitive_node", END)
     workflow.add_edge("clarify_node", END)

@@ -126,9 +126,7 @@ def test_route_from_intent_routes_each_intent_to_the_expected_node():
 
     assert graph.route_from_intent({"intent": "product_search"}) == "product_search_node"
     assert graph.route_from_intent({"intent": "product_details"}) == "product_details_node"
-    # TEMPORARY (#57): cart_action has no real destination yet — clarify_node
-    # is a placeholder until the cart-action nodes are built next.
-    assert graph.route_from_intent({"intent": "cart_action"}) == "clarify_node"
+    assert graph.route_from_intent({"intent": "cart_action"}) == "interpret_cart_action"
     assert graph.route_from_intent({"intent": "unsafe"}) == "sensitive_node"
     assert graph.route_from_intent({"intent": "fallback"}) == "small_talk_node"
     assert graph.route_from_intent({"intent": "clarify"}) == "clarify_node"

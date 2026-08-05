@@ -246,3 +246,48 @@ def test_generate_cart_confirmation_falls_back_to_generic_apology():
     assert graph.generate_cart_confirmation({"cart_action_result": "{}"}) == {
         "response": "Sorry, I couldn't update your cart."
     }
+
+
+# --- End-to-end: proves build_chat_graph()'s cart-action wiring is
+# correct, not just each node in isolation. ---
+
+async def test_chat_graph_end_to_end_cart_action_add(mocker):
+    import app.graph as graph
+
+    mocker.patch.object(graph, "_intent_entity_extractor", mocker.Mock(
+        ainvoke=AsyncMock(return_value=graph.IntentEntityExtraction(
+            intent="cart_action", product_reference="the blue jacket",
+            quantity=2, cart_action_type="add",
+        )),
+    ))
+    mocker.patch.object(graph, "resolve_product_reference", AsyncMock(return_value="p1"))
+    mocker.patch("cart_tools.get_product_impl", AsyncMock(return_value=_product_json()))
+    mocker.patch(
+        "cart_tools.add_to_cart_impl",
+        AsyncMock(return_value=json.dumps({"message": "Added 2 x Blue Jacket to cart"})),
+    )
+
+    result = await graph.chat_graph.ainvoke({
+        "input": "add 2 blue jackets to my cart", "chat_history": [], "session_id": "s1",
+    })
+
+    assert result["intent"] == "cart_action"
+    assert result["response"] == "Added 2 x Blue Jacket to cart"
+
+
+async def test_chat_graph_end_to_end_cart_action_invalid_routes_to_clarify(mocker):
+    import app.graph as graph
+
+    mocker.patch.object(graph, "_intent_entity_extractor", mocker.Mock(
+        ainvoke=AsyncMock(return_value=graph.IntentEntityExtraction(
+            intent="cart_action", product_reference="a made-up item",
+            cart_action_type="add",
+        )),
+    ))
+    mocker.patch.object(graph, "resolve_product_reference", AsyncMock(return_value=None))
+
+    result = await graph.chat_graph.ainvoke({
+        "input": "add the made-up item to my cart", "chat_history": [], "session_id": "s1",
+    })
+
+    assert result["response"] == "response from graph - clarify node placeholder"
