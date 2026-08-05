@@ -41,3 +41,20 @@ def decode_access_token(token: str) -> int | None:
         return int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         return None
+
+
+def extract_bearer_token(authorization_header: str | None) -> str | None:
+    """Pulls the token out of an `Authorization: Bearer <token>` header,
+    case-insensitively (the Bearer scheme name is not case-sensitive per
+    RFC 6750/RFC 7235). Returns None if the header is absent, doesn't use
+    the Bearer scheme, or has no token after the scheme — callers should
+    treat that the same as "no credentials presented" (fall back to guest
+    identity), not attempt to decode an empty/malformed string.
+    """
+    if not authorization_header:
+        return None
+    scheme, sep, token = authorization_header.partition(" ")
+    if not sep or scheme.lower() != "bearer":
+        return None
+    token = token.strip()
+    return token or None

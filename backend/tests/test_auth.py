@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from jose import jwt
 
 from app.config import settings
-from auth import create_access_token, decode_access_token, hash_password, verify_password
+from auth import create_access_token, decode_access_token, extract_bearer_token, hash_password, verify_password
 
 
 def test_hash_password_produces_a_bcrypt_hash_distinct_from_the_input():
@@ -66,3 +66,29 @@ def test_decode_access_token_returns_none_for_missing_sub_claim():
     token = jwt.encode(claims_without_sub, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
     assert decode_access_token(token) is None
+
+
+def test_extract_bearer_token_returns_the_token_for_a_standard_header():
+    assert extract_bearer_token("Bearer abc123") == "abc123"
+
+
+def test_extract_bearer_token_is_case_insensitive_on_the_scheme():
+    assert extract_bearer_token("bearer abc123") == "abc123"
+    assert extract_bearer_token("BEARER abc123") == "abc123"
+
+
+def test_extract_bearer_token_returns_none_for_missing_header():
+    assert extract_bearer_token(None) is None
+
+
+def test_extract_bearer_token_returns_none_for_empty_header():
+    assert extract_bearer_token("") is None
+
+
+def test_extract_bearer_token_returns_none_for_scheme_with_no_token():
+    assert extract_bearer_token("Bearer") is None
+    assert extract_bearer_token("Bearer ") is None
+
+
+def test_extract_bearer_token_returns_none_for_a_different_scheme():
+    assert extract_bearer_token("Basic abc123") is None

@@ -60,13 +60,25 @@ async def test_falls_back_to_guest_when_token_points_to_a_nonexistent_user(sessi
     assert resolved.email == "session-guest-session-3@shadow.local"
 
 
-async def test_strips_bearer_prefix_correctly(session):
+async def test_requires_bearer_scheme_prefix(session):
+    # A bare token with no "Bearer " scheme is not a valid Authorization
+    # header (RFC 7235) — must fall back to guest, not be lenient about it.
     real_user = await get_or_create_shadow_user(session, "not-used")
     await session.commit()
     token = create_access_token(real_user.id)
 
-    # No "Bearer " prefix at all should also resolve correctly, since the
-    # resolver strips the prefix rather than requiring it.
-    resolved = await resolve_user(session, authorization_header=token, session_id="irrelevant")
+    resolved = await resolve_user(session, authorization_header=token, session_id="guest-session-4")
+    await session.commit()
+
+    assert resolved.id != real_user.id
+    assert resolved.email == "session-guest-session-4@shadow.local"
+
+
+async def test_bearer_scheme_is_case_insensitive(session):
+    real_user = await get_or_create_shadow_user(session, "not-used")
+    await session.commit()
+    token = create_access_token(real_user.id)
+
+    resolved = await resolve_user(session, authorization_header=f"bearer {token}", session_id="irrelevant")
 
     assert resolved.id == real_user.id
