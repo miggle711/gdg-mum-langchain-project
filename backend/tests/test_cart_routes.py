@@ -10,9 +10,10 @@ import pytest_asyncio
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from auth import create_access_token
 from db import Base
 from models_db import Address, Cart, User
-from session_identity import get_or_create_shadow_user
+from session_identity import get_or_create_shadow_user, resolve_user
 from app.routes.cart import _get_or_create_cart
 
 
@@ -77,3 +78,33 @@ async def test_checkout_address_ownership_check_rejects_other_users_address(sess
         select(Address).where(Address.id == address.id, Address.user_id == owner.id)
     )
     assert result.scalar_one_or_none() is not None
+
+
+async def test_same_session_id_resolves_to_different_carts_authenticated_vs_guest(session):
+    """cart.py's routes now resolve identity via resolve_user (#82), not
+    get_or_create_shadow_user directly — a real account's cart must stay
+    fully separate from a guest cart, even if a guest request happens to
+    reuse the same session_id string a logged-in user's request also sends."""
+    real_user = User(email="real@example.com", name="Real User", password_hash="irrelevant-for-this-test")
+    session.add(real_user)
+    await session.commit()
+    real_cart = await _get_or_create_cart(session, real_user.id)
+    await session.commit()
+
+    token = create_access_token(real_user.id)
+    shared_session_id = "same-session-id-both-requests"
+
+    # Authenticated request: JWT present, resolves to the real account
+    authenticated_user = await resolve_user(session, authorization_header=f"Bearer {token}", session_id=shared_session_id)
+    await session.commit()
+    assert authenticated_user.id == real_user.id
+
+    # Guest request: no JWT, same session_id string — must NOT resolve to the real account
+    guest_user = await resolve_user(session, authorization_header=None, session_id=shared_session_id)
+    await session.commit()
+    assert guest_user.id != real_user.id
+    assert guest_user.email == f"session-{shared_session_id}@shadow.local"
+
+    guest_cart = await _get_or_create_cart(session, guest_user.id)
+    await session.commit()
+    assert guest_cart.id != real_cart.id

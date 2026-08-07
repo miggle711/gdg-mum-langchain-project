@@ -64,7 +64,13 @@ async def test_classify_intent_falls_back_to_clarify(mocker):
     mock_classifier.ainvoke = AsyncMock(return_value=InvalidClassification())
     mocker.patch.object(graph, "_intent_classifier", mock_classifier)
 
-    assert (await graph.classify_intent({"input": "asdf qwerty"}))["intent"] == "clarify"
+    result = await graph.classify_intent({"input": "asdf qwerty"})
+
+    assert result["intent"] == "clarify"
+    # Classifier ran successfully (just returned an unrecognized label) —
+    # not an infra failure, so no error flag (contrast with the LLM-errors
+    # test below).
+    assert "error" not in result
 
 # Tests fallback behavior when LLM errors
 async def test_classify_intent_falls_back_to_clarify_when_llm_errors(mocker):
@@ -74,7 +80,13 @@ async def test_classify_intent_falls_back_to_clarify_when_llm_errors(mocker):
     mock_classifier.ainvoke = AsyncMock(side_effect=RuntimeError("temporary model failure"))
     mocker.patch.object(graph, "_intent_classifier", mock_classifier)
 
-    assert (await graph.classify_intent({"input": "I'm looking for a gift but not sure what kind"}))["intent"] == "clarify"
+    result = await graph.classify_intent({"input": "I'm looking for a gift but not sure what kind"})
+
+    assert result["intent"] == "clarify"
+    # A real classifier failure (e.g. quota exhaustion) must be distinguishable
+    # from a genuine ambiguous-message clarify, not silently look like a normal
+    # successful reply to the caller (#77).
+    assert result["error"] is True
 
 
 def test_graph_compiles():

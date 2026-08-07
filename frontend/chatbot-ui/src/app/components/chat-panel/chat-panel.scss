@@ -58,6 +58,49 @@
   color: #22c55e;
 }
 
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.auth-link {
+  font-size: 13px;
+  color: var(--mat-sys-primary);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+
+  button.active {
+    color: var(--mat-sys-primary);
+    font-weight: 600;
+  }
+}
+
+.auth-field {
+  width: 100%;
+}
+
+.auth-error {
+  color: var(--mat-sys-error, #d32f2f);
+  font-size: 13px;
+  margin: 0;
+}
+
+.auth-submit {
+  margin-top: 4px;
+}
+
 .message-list {
   flex: 1;
   overflow-y: auto;

@@ -8,12 +8,56 @@
       <span class="agent-status">Online</span>
     </div>
   </div>
-  <button mat-icon-button (click)="onClose()">
-    <mat-icon>close</mat-icon>
-  </button>
+  <div class="chat-header-actions">
+    @if (auth.isLoggedIn()) {
+      <button mat-button class="auth-link" (click)="logout()">Log out</button>
+    } @else {
+      <button mat-button class="auth-link" (click)="toggleAuthForm()">
+        {{ showAuthForm ? 'Back to chat' : 'Log in' }}
+      </button>
+    }
+    <button mat-icon-button (click)="onClose()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
 </div>
 
 <mat-divider></mat-divider>
+
+@if (showAuthForm) {
+  <div class="auth-form">
+    <div class="auth-tabs">
+      <button mat-button [class.active]="authMode === 'login'" (click)="switchAuthMode('login')">Log in</button>
+      <button mat-button [class.active]="authMode === 'signup'" (click)="switchAuthMode('signup')">Sign up</button>
+    </div>
+
+    @if (authMode === 'signup') {
+      <mat-form-field appearance="outline" class="auth-field">
+        <mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="authName" [disabled]="authLoading" />
+      </mat-form-field>
+    }
+
+    <mat-form-field appearance="outline" class="auth-field">
+      <mat-label>Email</mat-label>
+      <input matInput type="email" [(ngModel)]="authEmail" [disabled]="authLoading" />
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="auth-field">
+      <mat-label>Password</mat-label>
+      <input matInput type="password" [(ngModel)]="authPassword" [disabled]="authLoading"
+        (keydown.enter)="submitAuthForm()" />
+    </mat-form-field>
+
+    @if (authError) {
+      <p class="auth-error">{{ authError }}</p>
+    }
+
+    <button mat-flat-button color="primary" class="auth-submit" [disabled]="authLoading" (click)="submitAuthForm()">
+      {{ authMode === 'login' ? 'Log in' : 'Sign up' }}
+    </button>
+  </div>
+} @else {
 
 <div class="message-list" #messageList>
   @if (messages.length === 0 && !isLoading) {
@@ -59,3 +103,5 @@
     <mat-icon>arrow_upward</mat-icon>
   </button>
 </div>
+
+}

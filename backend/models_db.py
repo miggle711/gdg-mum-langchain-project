@@ -52,9 +52,20 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String, nullable=False, unique=True, index=True)
     name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # NULL = guest/shadow user; set = real account (#82)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
     addresses = relationship("Address", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserPreferences(Base):
+    __tablename__ = "user_preferences"
+
+    # One row per user — no separate autoincrement id, same shape as
+    # Cart.user_id being unique (#54).
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    preferences = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow, nullable=False)
 
 
 class Address(Base):

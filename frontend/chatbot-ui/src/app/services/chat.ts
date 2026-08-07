@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { Auth } from './auth';
 
 
 // Injectable means this service can be injected into components
@@ -9,14 +10,17 @@ import { map } from 'rxjs/operators';
   providedIn: 'root', // This makes the service available application-wide without needing to add it to a module's providers array
 })
 export class Chat {
-  private apiUrl = 'http://localhost:8000';  // Base URL for the backend API
+  private apiUrl = '/api';  // Base URL for the backend API, proxied by nginx (nginx.conf)
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient, private auth: Auth) {}
 
   // Fetches prior chat history for a session (used to rehydrate the panel
   // on a returning visit, when Session already has a persisted session_id).
+  // Sends the Authorization header when logged in, so a returning logged-in
+  // user's history is looked up by their account, not the raw session_id
+  // (backend/app/routes/chat.py's _conversation_key, #82).
   getConversation(sessionId: string): Observable<{ session_id: string; history: { role: string; content: string }[]; message_count: number }> {
-    return this.http.get<any>(`${this.apiUrl}/conversation/${sessionId}`);
+    return this.http.get<any>(`${this.apiUrl}/conversation/${sessionId}`, { headers: this.auth.authHeader() });
   }
 
   send(userPrompt: string, sessionId: string): Observable<ChatResponse> {
@@ -24,7 +28,7 @@ export class Chat {
       .post<any>(`${this.apiUrl}/chat`, {
         session_id: sessionId,
         message: userPrompt,
-      })
+      }, { headers: this.auth.authHeader() })
       .pipe(
         map((response) => ({ reply: response.response }))
       );
@@ -42,7 +46,7 @@ export class Chat {
   ): Promise<void> {
     const response = await fetch(`${this.apiUrl}/chat/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.auth.authHeader() },
       body: JSON.stringify({ session_id: sessionId, message: userPrompt }),
     });
 

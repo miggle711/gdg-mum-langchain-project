@@ -32,13 +32,13 @@ describe('Session', () => {
     const sessionId = await firstValueFrom(service.getOrCreateSessionId());
 
     expect(sessionId).toBe('existing-session-id');
-    httpMock.expectNone('http://localhost:8000/session/start');
+    httpMock.expectNone('/api/session/start');
   });
 
   it('calls /session/start and persists the result when nothing is stored', async () => {
     const resultPromise = firstValueFrom(service.getOrCreateSessionId());
 
-    const req = httpMock.expectOne('http://localhost:8000/session/start');
+    const req = httpMock.expectOne('/api/session/start');
     expect(req.request.method).toBe('POST');
     req.flush({ session_id: 'new-session-id', message: 'Welcome to our store! How can I help you find the perfect product today?' });
 

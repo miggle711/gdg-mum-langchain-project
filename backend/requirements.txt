@@ -19,6 +19,8 @@ sqlalchemy==2.0.36
 alembic==1.13.3
 asyncpg==0.29.0
 greenlet==3.1.1
+bcrypt==4.2.0
+python-jose[cryptography]==3.3.0
 Faker==26.0.0
 pytest==8.3.4
 pytest-mock==3.14.0

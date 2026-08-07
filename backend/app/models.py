@@ -107,3 +107,20 @@ class ProductResponse(BaseModel):
     rating: float | None = None
     reviews: int
     image: str | None = None
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int

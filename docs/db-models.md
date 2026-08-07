@@ -1,6 +1,6 @@
 # Data Models
 
-Product *search* data lives in an Elasticsearch document index; conversation state and the semantic search cache live in Redis as key-value/vector entries. As of Phase 1 (issue #32), a **Postgres** relational database also exists for products, users, addresses, and reviews — see [Postgres: relational tables](#postgres-relational-tables) below. This document is the field-level reference for all three; see [backend/DATABASE.md](../backend/DATABASE.md) for setup/usage context.
+Product *search* data lives in an Elasticsearch document index; conversation state and the semantic search cache live in Redis as key-value/vector entries. A **Postgres** relational database (issue #32) holds products, users, addresses, reviews, carts/orders/payments (#49+), user preferences (#54), and the auth `password_hash` column (#82) — see [Postgres: relational tables](#postgres-relational-tables) below. This document is the field-level reference for all three; see [backend/DATABASE.md](../backend/DATABASE.md) for setup/usage context.
 
 ## Elasticsearch: `products` index
 
@@ -31,6 +31,7 @@ Redis Stack is used for three distinct purposes, using different key prefixes an
 - **Written/read by**: `backend/conversations.py` (`save_messages`, `load_messages`)
 - **Value**: `langchain_core.messages` serialized via `messages_to_dict()` — a JSON list of `{type, data: {content, ...}}` objects
 - **TTL**: `conversation_ttl_seconds` (default 24h) — conversations expire, they are not kept forever
+- **`conversation_id` shape** (#82, #54): for an authenticated request (valid JWT), `user:{user_id}` — so a logged-in user's history is keyed by their durable, unspoofable identity rather than the client-supplied `session_id`, and follows them across separate chat sessions. For a guest, the raw client-supplied `session_id`, **except** a guest-supplied `session_id` that itself starts with the reserved `user:` prefix is re-namespaced under `guest:` (`app/routes/chat.py`'s `_conversation_key`) — closes a spoofing path where a guest could otherwise send `session_id="user:55"` to read/write a real user's conversation history with no valid JWT.
 
 ### Conversation summary — `conversation:{conversation_id}:summary`
 
@@ -93,11 +94,19 @@ Relationships: `images` (1:N → `product_images`, cascade delete), `reviews_rel
 | Field | Type | Notes |
 | --- | --- | --- |
 | `id` | `Integer` (PK, autoincrement) | |
-| `email` | `String`, unique, indexed | |
+| `email` | `String`, unique, indexed | For shadow/guest users (see below), a synthetic `session-{session_id}@shadow.local` address, not a real email |
 | `name` | `String` | |
+| `password_hash` | `String`, nullable | `NULL` = guest/shadow user; a bcrypt hash = a real signed-up account (#82). This single column is the entire discriminator — both kinds of identity are the same table/row shape, so no downstream code (cart, orders, preferences) needs to know which kind it's dealing with. |
 | `created_at` | `DateTime` | |
 
-**Synthetic data** (Faker-generated) — no real user dataset exists; the source dataset's review `user_id` values are opaque anonymized hashes, not usable as real user records. Relationship: `addresses` (1:N, cascade delete).
+Two distinct ways rows get created here, both converging on this one table:
+
+- **Seed data**: synthetic (Faker-generated) — no real user dataset exists; the source dataset's review `user_id` values are opaque anonymized hashes, not usable as real user records. These rows never get a `password_hash`.
+- **Real accounts** (#82): `POST /auth/signup` creates a row with a real `email`/`name` and a bcrypt `password_hash`. **Guest/shadow accounts** (pre-existing, unauthenticated flow): `session_identity.py`'s `get_or_create_shadow_user` creates a row keyed by a synthetic email derived from the client's `session_id`, with `password_hash` left `NULL`.
+
+Relationships: `addresses` (1:N, cascade delete). Also referenced by `cart.user_id`, `orders.user_id`, and `user_preferences.user_id` (all `ON DELETE CASCADE`).
+
+**Known gap**: a guest's cart (tied to their shadow user's `id`) and a real account's cart (tied to a different `id` after login/signup) are separate rows with no automatic merge — see issue #84.
 
 ### `addresses`
 
@@ -128,9 +137,75 @@ Synthetic, same as `users` — a user can have 1-3 addresses in the seed data.
 
 **Real data** (unlike `users`/`addresses`) — sourced from `McAuley-Lab/Amazon-Reviews-2023`'s `raw_review_categories/{Category}.jsonl` files, joined to seeded products via `parent_asin` = `products.id`.
 
-### Dropped from Phase 1 scope: `product_variants`
+### `cart`
 
-Considered (product_id FK, sku, attributes, price, stock) but dropped — confirmed the source dataset has no real variant grouping (no products share a `parent_asin`/variant relationship). Would have meant inert schema seeded with fabricated pass-through rows and zero real consumers. See issue #32 for full reasoning; revisit only if real variant data or a concrete need shows up, likely alongside Phase 2 (cart/orders).
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `Integer` (PK, autoincrement) | |
+| `user_id` | `Integer`, FK → `users.id` (`ON DELETE CASCADE`), **unique**, indexed | One cart per user — guest or real account (see the `users` table's "Known gap" note re: no cart merge on login) |
+| `created_at` | `DateTime` | |
+| `updated_at` | `DateTime` | See issue #87 — relies on an ORM-level Python default, not a DB `server_default` |
+
+Relationship: `items` (1:N → `cart_items`, cascade delete).
+
+### `cart_items`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `Integer` (PK, autoincrement) | |
+| `cart_id` | `Integer`, FK → `cart.id` (`ON DELETE CASCADE`), indexed | |
+| `product_id` | `String`, FK → `products.id` (`ON DELETE CASCADE`), indexed | |
+| `quantity` | `Integer`, default 1 | |
+| `created_at` | `DateTime` | |
+
+No frozen price — `cart_items` always reflects the current `products.price` at read/checkout time. Price freezing only happens at checkout, in `order_items.unit_price` below.
+
+### `orders`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `Integer` (PK, autoincrement) | |
+| `user_id` | `Integer`, FK → `users.id` (`ON DELETE CASCADE`), indexed | |
+| `address_id` | `Integer`, FK → `addresses.id` (**`ON DELETE RESTRICT`**), indexed | `RESTRICT`, not `CASCADE` like every other FK in this schema — orders are append-only financial history, so deleting an address with order history fails loudly instead of silently erasing the record of what was ordered |
+| `status` | `String`, default `"paid"`, indexed | One of `pending`/`paid`/`shipped`/`delivered`/`cancelled` |
+| `created_at` | `DateTime` | |
+
+Relationships: `items` (1:N → `order_items`, cascade delete), `payment` (1:1 → `payments`, cascade delete).
+
+### `order_items`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `Integer` (PK, autoincrement) | |
+| `order_id` | `Integer`, FK → `orders.id` (`ON DELETE CASCADE`), indexed | |
+| `product_id` | `String`, FK → `products.id` (**`ON DELETE RESTRICT`**) | Same `RESTRICT` reasoning as `orders.address_id` — a product with order history can't be hard-deleted |
+| `quantity` | `Integer` | |
+| `unit_price` | `Float` | Frozen at checkout time — never recomputed after, unlike `cart_items` |
+
+### `payments`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `Integer` (PK, autoincrement) | |
+| `order_id` | `Integer`, FK → `orders.id` (`ON DELETE CASCADE`), **unique**, indexed | One payment per order |
+| `amount` | `Float` | |
+| `status` | `String`, default `"succeeded"` | **Mocked** — there is no real payment provider integration; every checkout always succeeds. See issue #68 for the gap this leaves (no balance/payment-failure handling). |
+| `provider_reference` | `String` | Fake reference string, e.g. `f"mock_{uuid4().hex}"` |
+| `created_at` | `DateTime` | |
+
+### `user_preferences`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `user_id` | `Integer`, FK → `users.id` (`ON DELETE CASCADE`), **primary key** | One row per user — no separate autoincrement id, same one-per-user shape as `cart.user_id` |
+| `preferences` | `Text` | Freeform LLM-generated text summarizing durable customer preferences (e.g. preferred brands, price sensitivity) — not structured key-value facts (#54) |
+| `updated_at` | `DateTime` | See issue #87 — same `server_default` gap as `cart.updated_at` |
+
+Long-term memory (#54): populated/updated by `conversations.py`'s `maybe_summarise()`, piggybacking on the same LLM call already made for conversation summarization, only for **authenticated** users (`password_hash` is set) — guest/shadow users never get a row here. Read on every chat turn for a logged-in user and injected into `chat_history` as a `SystemMessage`, so it persists across separate conversations/sessions, unlike the Redis-only conversation summary above.
+
+### Dropped from scope: `product_variants`
+
+Considered (product_id FK, sku, attributes, price, stock) but dropped — confirmed the source dataset has no real variant grouping (no products share a `parent_asin`/variant relationship). Would have meant inert schema seeded with fabricated pass-through rows and zero real consumers. See issue #32 for full reasoning; revisit only if real variant data or a concrete need shows up.
 
 ## Config reference
 

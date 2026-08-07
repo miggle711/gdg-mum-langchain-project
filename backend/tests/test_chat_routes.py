@@ -177,3 +177,91 @@ async def test_chat_stream_route_uses_langgraph_and_preserves_sse_contract(mocke
     assert len(save_args[1]) == 2
     assert save_args[1][0].content == "show me shoes"
     assert save_args[1][1].content == "GRAPH_STREAM_SENTINEL"
+
+
+@pytest.mark.anyio
+async def test_chat_route_returns_502_when_graph_reports_error(mocker, chat_test_app):
+    """A real classification failure (e.g. quota exhaustion) must surface as
+    an actual error, not a 200 OK carrying clarify_node's placeholder text
+    indistinguishable from a genuine successful reply (#77)."""
+    app, chat_module = chat_test_app
+    history = InMemoryChatMessageHistory()
+
+    mocker.patch.object(
+        chat_module,
+        "get_or_create_conversation",
+        return_value={"history": history},
+    )
+    mocker.patch.object(chat_module, "maybe_summarise", return_value=(None, []))
+    save_messages = mocker.patch.object(chat_module, "save_messages")
+
+    mocker.patch.object(chat_module.langfuse_client, "create_trace_id", return_value="trace-error")
+    mocker.patch.object(chat_module.langfuse_client, "start_as_current_span", side_effect=lambda **kw: _fake_span())
+    mocker.patch.object(chat_module.langfuse_client, "update_current_trace")
+    mocker.patch.object(chat_module, "CallbackHandler", return_value=object())
+
+    mocker.patch.object(
+        chat_module.chat_graph,
+        "ainvoke",
+        AsyncMock(return_value={
+            "intent": "clarify",
+            "error": True,
+            "response": "response from graph - clarify node placeholder",
+        }),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/chat",
+            json={"session_id": "conv-error", "message": "hello"},
+        )
+
+    assert response.status_code == 502
+    # The failed turn should not get persisted as if it were a real exchange.
+    save_messages.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_chat_stream_route_sends_error_event_when_graph_reports_error(mocker, chat_test_app):
+    app, chat_module = chat_test_app
+    history = InMemoryChatMessageHistory()
+
+    mocker.patch.object(
+        chat_module,
+        "get_or_create_conversation",
+        return_value={"history": history},
+    )
+    mocker.patch.object(chat_module, "maybe_summarise", return_value=(None, []))
+    save_messages = mocker.patch.object(chat_module, "save_messages")
+
+    mocker.patch.object(chat_module.langfuse_client, "create_trace_id", return_value="trace-stream-error")
+    mocker.patch.object(chat_module.langfuse_client, "start_as_current_span", side_effect=lambda **kw: _fake_span())
+    mocker.patch.object(chat_module.langfuse_client, "update_current_trace")
+    mocker.patch.object(chat_module, "CallbackHandler", return_value=object())
+
+    mocker.patch.object(
+        chat_module.chat_graph,
+        "ainvoke",
+        AsyncMock(return_value={
+            "intent": "clarify",
+            "error": True,
+            "response": "response from graph - clarify node placeholder",
+        }),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/chat/stream",
+            json={"session_id": "conv-stream-error", "message": "hello"},
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line]
+    assert lines == [
+        'data: {"trace_id": "trace-stream-error"}',
+        'data: {"error": "Failed to process message, please try again."}',
+    ]
+    # No [DONE] marker and nothing persisted — the failed turn is not a real exchange.
+    save_messages.assert_not_called()
