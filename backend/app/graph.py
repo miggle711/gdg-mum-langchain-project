@@ -25,6 +25,7 @@ class GraphState(TypedDict, total=False):
     intent: Intent
     response: str
     error: bool
+    tool_calls: list[dict[str, Any]]
 
 
 class IntentClassification(BaseModel):
@@ -135,11 +136,12 @@ async def product_node(state: GraphState, config: RunnableConfig | None = None) 
     with _start_graph_span("graph.product_node", state) as span:
         result = await _invoke_product_agent(state, config=config)
         response = result.get("output") or "I apologize, but I'm having trouble generating a response at the moment."
+        tool_calls = result.get("tool_calls", [])
         span.update(output={
             "response": response,
-            "tool_calls": result.get("tool_calls", []),
+            "tool_calls": tool_calls,
             })
-        return {"response": response}
+        return {"response": response, "tool_calls": tool_calls}
 
 
 def small_talk_node(state: GraphState) -> Dict[str, Any]:
