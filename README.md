@@ -158,6 +158,7 @@ It does not currently stream token-by-token model output.
 ## Getting Started
 
 ### Prerequisites
+
 - Docker Desktop
 - A `backend/.env` with `GOOGLE_API_KEY` set — see [backend/.env.example](backend/.env.example) for the full list (Redis/ES/DB URLs, Langfuse keys). This is the only `.env` file the app reads (`backend/app/config.py`); `docker compose up` itself doesn't consume it directly (compose passes config via `docker-compose.yml`'s `environment:` blocks), but scripts and any non-Docker local run do.
 
@@ -240,6 +241,54 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 - The product branch is intentionally transitional: LangGraph owns routing, but `product_details` still delegates to the existing tool-calling runtime in `backend/app/agent.py`.
 - The system prompt for product requests is hardcoded in `backend/app/agent.py`; it is not currently configurable per-request.
 - `small_talk`, `sensitive_topic`, and `clarify` are currently lightweight graph-native branches and should be refined before treating them as production-quality conversational flows.
-- Elasticsearch and Redis indices are created automatically on backend startup if they don't already exist (`init_es_index`, `init_cache_index`), inside an async FastAPI `lifespan` handler. ES/Redis are a *soft* dependency at boot: if either is unreachable, startup retries a few times, then logs a warning and continues rather than crashing the whole API (#52) — `GET /health` reports the live status either way.
+- Elasticsearch and Redis indices are created automatically on backend startup if they don't already exist (`init_es_index`, `init_cache_index`), inside an async FastAPI `lifespan` handler. ES/Redis are a _soft_ dependency at boot: if either is unreachable, startup retries a few times, then logs a warning and continues rather than crashing the whole API (#52) — `GET /health` reports the live status either way.
 - Langfuse tracing now uses explicit request-level spans in `chat.py`, plus child spans from `graph.py`, so every request produces a visible trace even when no product tools are called.
 - See [docs/decisions.md](docs/decisions.md) for why certain architecture choices were made (e.g. ConversationChain to AgentExecutor to LangGraph, LangSmith to Langfuse).
+
+## Evaluation Metrics
+
+1. tone-judge
+
+- What it checks: Whether the assistant's response is polite, professional, and appropriately empathetic, matching the tone expected of a customer service agent, as required by the system prompt.
+- Score type: Numeric, 0~1.
+  1 : consistently polite, professional, and empathetic.
+  0 : unprofessional, cold, dismissive, or otherwise inappropriate for a customer service context.
+- Observed behavior:
+  A complete, well-formed product answer scored 0.95, with reasoning citing that it was "highly professional and helpful, immediately answering the question and providing relevant product options along with a clear offer for further assistance."
+  An empty assistant response (no text returned at all) correctly scored 0, with reasoning noting it was "highly unprofessional, dismissive, and entirely unhelpful in a customer service interaction."
+
+2. no-match-honesty-judge
+
+- What it checks: Specifically whether the assistant is honest when the product search tool returns zero matching products (does it clearly tell the customer nothing was found, rather than inventing or implying a product exists when it doesn't).
+- Score type: Boolean.
+  true : either (a) the tool returned matching products (check doesn't apply, no violation to flag), or (b) the tool returned zero matches and the response honestly said so.
+  false : the tool returned zero matches, but the response fabricated, or implied a product that doesn't exist.
+- Observed behavior:
+  When the tool returned multiple real matches (a "toy car" query with 4 relevant results, and a "boots" query with 17 relevant results), the judge correctly scored true everytime.
+
+3. groundedness-judge
+
+- What it checks: Whether every specific claim in the assistant's response (product names, prices, ratings) is actually traceable to the real data returned by the product search tool, which the assistant isn't inventing or hallucinating any detail not present in the tool's output.
+- Score type: Boolean.
+  true : the response is fully grounded, with no fabricated details.
+  false : the response includes any information not present in the tool data.
+- Observed behavior:
+  responses listing real products with matching prices/ratings/review counts (a "toy car" query and a "plushie" query) scored true, with reasoning confirming every detail was "directly traceable to the provided tool data."
+  One response for a "toy car with wings instead of wheels" query, where the tool's actual results were all traditional (wingless) toy cars with low similarity scores, correctly scored true on the core claim (the assistant honestly said no exact match was found). However, the assistant also suggested "toy airplanes" or "drones" as alternative categories the customer might want, and the judge scored the overall response false, since those categories never appeared anywhere in the tool's actual data.
+
+4. helpfulness-judge
+
+- What it checks: Whether the assistant's response is genuinely useful to the customer, directly addressing their question, including relevant product details, being honest about no-match situations, and maintaining a professional tone. This is a more holistic, customer-outcome-focused metric than groundedness or tone alone.
+- Score type: Numeric, 0~1.
+  1 : excellent, fully helpful response.
+  0 : not helpful at all.
+- Observed behavior:
+  Complete response scored 1, directly answering the question with relevant options, prices, and ratings.
+  A "toy car with wings" query, where the assistant honestly reported no exact match and suggested alternative categories (toy airplanes, drones), scored 0.9.
+  "boots" query returned 17 results, but the specific products shown were mostly boot-related accessories (a boot sleeve, laces, leg gaiters, waders) rather than actual boots, scored 0.45, correctly identifying that "the initial product suggestions are largely accessories or related items rather than the footwear 'boots' the customer likely intended, diminishing its immediate helpfulness." This is a genuine, evaluator-caught retrieval relevance issue in semantic_search.
+
+## Evaluation Results in Summary
+
+1. the agent sometimes returns a completely empty response to a valid product query ("hi, is there toy car?"), rather than any text at all. This was caught by tone-judge scoring it 0, and is a genuine chatbot defect worth root-causing, not a test artifact (Elasticsearch/Redis were confirmed healthy at the time).
+
+2. semantic search relevance issue. A "hi, is there boots" query returned 17 results, but the top items shown were boot accessories (a bottle sleeve, laces, waders) rather than actual boots, scored 0.45, correctly flagged as "largely accessories or related items rather than the footwear 'boots' the customer likely intended." This is a genuine retrieval-quality gap in semantic_search, the tool is returning boot-adjacent products ranked above literal boots.
