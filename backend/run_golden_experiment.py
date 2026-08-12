@@ -4,6 +4,8 @@ import os
 from langfuse import Langfuse, get_client
 from app.config import settings
 from app.graph import chat_graph
+from search import init_es_index
+from cache import init_cache_index
 
 Langfuse(
     public_key=settings.langfuse_public_key,
@@ -13,7 +15,7 @@ Langfuse(
 
 langfuse = get_client()
 DATASET_NAME = "ecommerce-golden-set"
-RUN_NAME = "baseline-run-2"
+RUN_NAME = "baseline-run-1"
 PROGRESS_FILE = "golden_run_progress.json"
 
 
@@ -30,6 +32,9 @@ def save_completed(completed):
 
 
 async def main():
+    await init_es_index()
+    await init_cache_index()
+
     dataset = langfuse.get_dataset(DATASET_NAME)
     completed = load_completed()
 
@@ -41,15 +46,26 @@ async def main():
         try:
             with item.run(
                 run_name=RUN_NAME,
-                run_description="Second baseline run, after fixing intent classification quota fallback",
+                run_description="Baseline run, after fixing missing Redis cache index in standalone scripts",
             ) as root_span:
+                root_span.update(
+                    input=item.input,
+                    metadata=item.metadata,
+                )
+
                 result = await chat_graph.ainvoke({
                     "input": item.input,
                     "chat_history": [],
                     "session_id": f"golden-{item.id}",
                 })
                 response = result.get("response", "")
-                root_span.update(output={"response": response})
+                tool_calls = result.get("tool_calls", [])
+
+                root_span.update(output={
+                    "response": response,
+                    "tool_calls": tool_calls,
+                })
+                
 
             completed.add(item.id)
             save_completed(completed)
