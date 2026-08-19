@@ -1,12 +1,18 @@
 # Shopwise
 
-A LangGraph-routed ecommerce shopping assistant: an Angular frontend, a FastAPI backend, Gemini-based product search over Elasticsearch, real authentication with guest checkout, cart/order management, long-term customer memory, and a Redis-backed semantic cache and conversation store. Deployed with Docker.
+Shopwise is an ecommerce shopping assistant you chat with. It has an Angular frontend and a FastAPI backend, and it uses Google Gemini to search a product catalog stored in Elasticsearch. People can sign up for a real account or just check out as a guest, they can add items to a cart and place orders, and the assistant remembers their preferences across separate conversations. Everything runs in Docker.
 
 ## Overview
 
-The backend now exposes a LangGraph chat workflow that classifies each user turn into one of four intents: `product_details`, `small_talk`, `sensitive_topic`, or `clarify`. Product queries route into the existing Gemini tool-calling product runtime; the other branches return dedicated non-tool responses. Conversation history and summaries live in Redis so the app stays stateful across requests without keeping anything in process memory. Every chat call is traced in Langfuse, and users can leave thumbs up/down feedback tied to that trace.
+Every message you send goes through a LangGraph workflow that first figures out what kind of message it is: a product question, small talk, a sensitive topic, or something unclear. Product questions are handed off to a Gemini-powered tool that searches the catalog and can also add items to your cart or place an order. The other kinds of messages get a simple response with no tools involved.
 
-Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch candidates, a cross-encoder reranks them for relevance, and a Redis vector index caches results by query embedding so near-duplicate questions skip the expensive path.
+Conversation history is kept in Redis, so the app can pick up where you left off without holding anything in memory between requests. Once a conversation gets long, older messages are summarized to keep things short.
+
+If you are signed in, Shopwise also remembers things about you between separate conversations, for example that you tend to look for budget laptops or prefer a certain brand. This is stored in the database and is not something guests get, since guests do not have a permanent account.
+
+Every chat message is traced in Langfuse, and you can leave a thumbs up or thumbs down on any reply.
+
+For product search, Elasticsearch runs a search that combines keyword matching and semantic (meaning-based) matching to find candidate products. A second model then reranks those candidates to put the best matches first. Recent search results are also cached in Redis, so asking a very similar question again is fast.
 
 ## Tech Stack
 
@@ -33,20 +39,18 @@ Product search: Elasticsearch runs a hybrid BM25 + kNN vector query to fetch can
 
 ## Architecture
 
-1. **Frontend** calls `POST /chat/start` on load; the backend generates a `conversation_id` and returns a welcome message.
-2. **Frontend** sends each user message to `POST /chat` (or `/chat/stream`) with that `conversation_id`.
-3. **Backend** loads prior messages for that conversation from Redis, summarising older turns once the history passes a configurable threshold (`conversations.py`'s `maybe_summarise`), then invokes `chat_graph` with the user's message and recent history.
-4. **LangGraph** classifies the turn into one of four branches:
-   - `product_details` — routes into the existing Gemini tool-calling product runtime
-   - `small_talk` — handles casual conversation without product tools
-   - `sensitive_topic` — handles safety-sensitive prompts without product tools
-   - `clarify` — asks the user to clarify unclear intent
-5. **The product runtime** (`backend/app/agent.py`) decides whether to call a product tool:
-   - `semantic_search` — vague/descriptive queries ("something cozy for winter"), backed by the ES hybrid search + rerank pipeline
-   - `query_products` — exact filters (category, price range, rating), backed by a plain ES bool query
-   - `list_categories` — so the agent uses exact category names rather than guessing
-6. **Backend** saves the updated conversation back to Redis, and returns the response along with a `trace_id` for Langfuse.
-7. **Frontend** can submit feedback (thumbs up/down) against that `trace_id` via `POST /feedback`.
+1. The frontend calls `POST /session/start` when it loads. The backend creates a `session_id` and sends back a welcome message. This works even if you are not signed in, since every visitor gets a session.
+2. If you sign up or log in (`POST /auth/signup` or `POST /auth/login`), the backend gives you a token. From then on, the frontend sends that token with every request, and the backend uses it to know who you are.
+3. The frontend sends each chat message to `POST /chat` (or `POST /chat/stream` for a streaming reply), along with the session id.
+4. The backend loads the earlier messages for that conversation from Redis. If the conversation has gotten long, older messages are summarized first to keep things short. If you are signed in, the backend also loads what it remembers about your preferences and adds that to the context. Then it hands everything to the LangGraph workflow.
+5. LangGraph looks at your message and decides what kind of message it is:
+   - a product question, which goes to the Gemini-powered shopping tool below
+   - small talk, which gets a simple reply with no tools involved
+   - a sensitive topic, which gets a safe, non-product reply
+   - something unclear, which asks you to clarify
+6. For product questions, the shopping tool can call on Gemini to pick from several actions: search the catalog by meaning (for vague requests like "something cozy for winter"), search with exact filters like price or category, list available categories, look up one product, view your cart, add or remove items, change quantities, or look at your past orders. Whether you are signed in or a guest, your cart and orders are tied to your identity so nobody else can see or change them.
+7. The backend saves the updated conversation back to Redis and sends back the reply along with a trace id used for tracking in Langfuse.
+8. You can leave a thumbs up or thumbs down on any reply by sending that trace id to `POST /feedback`.
 
 ### LangGraph architecture (`backend/app/graph.py`)
 
@@ -90,39 +94,45 @@ sequenceDiagram
     autonumber
     actor U as User
     participant FE as Angular Frontend
-    participant BE as FastAPI (/chat)
+    participant BE as FastAPI backend
+    participant PG as Postgres
     participant R as Redis
     participant Graph as LangGraph Router
-    participant Product as Product Runtime<br/>(Gemini 2.5 Flash + tools)
+    participant Product as Shopping Tool<br/>(Gemini 2.5 Flash + tools)
     participant LF as Langfuse
 
     U->>FE: Open chat
-    FE->>BE: POST /chat/start
-    BE->>FE: conversation_id + welcome message
+    FE->>BE: POST /session/start
+    BE->>FE: session_id + welcome message
 
     U->>FE: Send message
-    FE->>BE: POST /chat {conversation_id, message}
-    BE->>R: load_messages(conversation_id)
+    FE->>BE: POST /chat {session_id, message, auth token if signed in}
+    BE->>R: load prior messages for this conversation
     R-->>BE: prior messages (+ summary if any)
     alt history over summary threshold
-        BE->>Product: summarise older turns (LLM call)
-        Product-->>BE: summary text
-        BE->>R: save_summary + save_messages (trimmed)
+        BE->>Product: summarize older turns (LLM call)
+        Product-->>BE: updated summary, and updated preferences if signed in
+        BE->>R: save summary + trimmed messages
+        BE->>PG: save preferences (signed-in users only)
+    end
+    opt user is signed in
+        BE->>PG: load saved preferences for this user
+        PG-->>BE: preferences, if any
     end
 
     BE->>LF: create_trace_id()
     BE->>LF: start request-level span
     BE->>Graph: invoke(input, chat_history, callbacks=[Langfuse handler])
     Graph->>Graph: classify intent and route branch
-    opt product_details branch
+    opt product question branch
         Graph->>Product: invoke(input, chat_history)
-        Product->>Product: pick a tool — semantic_search,<br/>query_products, or list_categories
-        Note over Product: tool executes against Elasticsearch/Redis —<br/>see Search Pipeline diagram above
+        Product->>Product: pick a tool: search, look up categories,<br/>view/add/remove cart items, check past orders, and more
+        Note over Product: tool executes against Elasticsearch/Redis/Postgres<br/>see Search Pipeline diagram above
         Product-->>Graph: final product response
     end
     Graph-->>BE: {intent, response}
 
-    BE->>R: save_messages(conversation_id, updated history)
+    BE->>R: save updated conversation history
     BE-->>FE: {response, trace_id}
     FE-->>U: Render assistant reply
 
@@ -143,17 +153,19 @@ It does not currently stream token-by-token model output.
 
 ## Features
 
-- LangGraph-based intent routing across product, small-talk, sensitive-topic, and clarify branches
-- Tool-calling product runtime over a real product catalog, not just a system-prompted chatbot
-- Hybrid lexical + semantic product search with cross-encoder reranking
-- Semantic response caching in Redis (near-duplicate queries skip search entirely)
-- Server-side conversation history in Redis with automatic summarisation for long conversations
-- SSE-compatible chat responses via `/chat/stream` (`trace_id` -> `text` -> `[DONE]`)
-- Langfuse tracing on every chat turn, with user feedback (thumbs up/down) tied to a trace
-- Prometheus metrics (`/metrics`) — cache hit/miss counters, ES/rerank latency histograms, standard HTTP metrics
-- Per-IP rate limiting (20 requests/minute on chat endpoints), backed by Redis so it's consistent across replicas
-- `/health` endpoint reporting Elasticsearch and Redis connectivity
-- Full Docker Compose deployment (frontend, backend, Redis Stack, Elasticsearch)
+- A chat assistant that understands whether you are asking about a product, making small talk, raising a sensitive topic, or being unclear, and responds appropriately
+- Real sign up and login, plus the option to just check out as a guest with no account
+- A shopping tool that can search the catalog, add or remove items from your cart, change quantities, check out, and look up your past orders
+- Search that combines keyword matching and meaning-based matching, then reranks the results so the best matches come first
+- Caching for near-duplicate search questions, so asking something similar again is fast
+- Conversation history kept in Redis, with older messages automatically summarized once a conversation gets long
+- For signed-in users, the assistant remembers preferences (like preferred brands or budget) across separate conversations, not just within one chat
+- Streaming chat replies over `/chat/stream`
+- Every chat message is traced in Langfuse, and you can leave a thumbs up or thumbs down on any reply
+- Prometheus metrics at `/metrics` for things like cache hits, search latency, and general request stats
+- Rate limiting so one visitor cannot send too many chat requests too quickly
+- A `/health` endpoint that reports whether Elasticsearch and Redis are reachable
+- Everything runs with Docker Compose: frontend, backend, Redis, Elasticsearch, and Postgres
 
 ## Getting Started
 
@@ -225,19 +237,47 @@ These also run automatically in CI (`.github/workflows/backend-tests.yml`) on ev
 
 ## API Endpoints
 
-- `POST /chat/start` — Initialize conversation, returns `conversation_id` and welcome message
-- `POST /chat` — Send message, returns AI response + `trace_id`
-- `POST /chat/stream` — Same as `/chat`, but returns SSE events in the order `trace_id` -> `text` -> `[DONE]`
-- `GET /conversation/{id}` — Retrieve conversation history
-- `DELETE /conversation/{id}` — Delete conversation
-- `GET /conversations` — List all conversations
-- `POST /feedback` — Submit thumbs up/down (+ optional comment) for a given `trace_id`
-- `GET /health` — Elasticsearch + Redis connectivity status
-- `GET /metrics` — Prometheus metrics
+### Chat
+
+- `POST /session/start` starts a new session and returns a session id and welcome message
+- `POST /chat` sends a message and gets back a reply plus a trace id
+- `POST /chat/stream` same as above, but streams the reply back as it is generated
+- `GET /conversation/{id}` gets the message history for a conversation
+- `DELETE /conversation/{id}` deletes a conversation
+- `GET /conversations` lists all conversations
+- `POST /feedback` submits a thumbs up or down (with an optional comment) for a given trace id
+
+### Account
+
+- `POST /auth/signup` creates a new account and returns an access token
+- `POST /auth/login` logs in with an email and password and returns an access token
+
+### Cart and orders
+
+- `GET /cart/{session_id}` gets the current cart
+- `POST /cart/add` adds an item to the cart
+- `PATCH /cart/item/{item_id}` changes the quantity of an item in the cart
+- `DELETE /cart/item/{item_id}` removes an item from the cart
+- `POST /checkout` places an order from the current cart
+- `GET /orders/{session_id}` lists past orders
+
+### Products
+
+Used to manage the catalog directly, separate from chat-based search.
+
+- `POST /products` adds a new product
+- `PATCH /products/{id}` updates a product
+- `DELETE /products/{id}` deletes a product
+
+### Operations
+
+- `GET /health` reports whether Elasticsearch and Redis are reachable
+- `GET /metrics` exposes Prometheus metrics
 
 ## Development Notes
 
-- Conversations are stored in Redis with a TTL (`conversation_ttl_seconds`, default 24h) — they survive backend restarts but expire eventually, not "forever."
+- Guests and signed-in users are both stored as `User` rows in Postgres. A guest gets a "shadow" user created automatically the first time they act (add to cart, etc). Signing up or logging in just gives a request a JWT token that resolves to a real `User` row instead. See `backend/session_identity.py`'s `resolve_user`.
+- Conversations are stored in Redis with a TTL (`conversation_ttl_seconds`, default 24h). They survive backend restarts but expire eventually, not "forever." Long-term preferences for signed-in users are stored separately in Postgres and do not expire.
 - The product branch is intentionally transitional: LangGraph owns routing, but `product_details` still delegates to the existing tool-calling runtime in `backend/app/agent.py`.
 - The system prompt for product requests is hardcoded in `backend/app/agent.py`; it is not currently configurable per-request.
 - `small_talk`, `sensitive_topic`, and `clarify` are currently lightweight graph-native branches and should be refined before treating them as production-quality conversational flows.
