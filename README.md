@@ -1,6 +1,6 @@
-# gdg-mum-langchain-project
+# Shopwise
 
-A LangGraph-routed ecommerce customer service chatbot: an Angular frontend, a FastAPI backend, Gemini-based product search over Elasticsearch, and a Redis-backed semantic cache and conversation store. Deployed with Docker.
+A LangGraph-routed ecommerce shopping assistant: an Angular frontend, a FastAPI backend, Gemini-based product search over Elasticsearch, real authentication with guest checkout, cart/order management, long-term customer memory, and a Redis-backed semantic cache and conversation store. Deployed with Docker.
 
 ## Overview
 
