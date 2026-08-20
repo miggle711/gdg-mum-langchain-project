@@ -110,8 +110,7 @@ async def classify_intent(state: GraphState, config: RunnableConfig | None = Non
             # lets callers (app/routes/chat.py) tell a real failure apart from
             # an ordinary clarify response instead of the two looking
             # identical to the caller (#77).
-            raise
-            # return {"intent": "clarify", "error": True}
+            return {"intent": "clarify", "error": True}
 
         intent = getattr(result, "intent", "clarify")
         if intent not in ALLOWED_INTENTS:

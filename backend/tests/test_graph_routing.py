@@ -110,7 +110,8 @@ async def test_product_node_uses_product_agent(mocker):
     }
 
     assert (await graph.product_node(state)) == {
-        "response": "Here are three laptop options under $900."
+        "response": "Here are three laptop options under $900.",
+        "tool_calls": [],
     }
     mock_invoke.assert_called_once_with(state, config=None)
 
@@ -121,7 +122,8 @@ async def test_product_node_falls_back_when_agent_returns_no_output(mocker):
     mocker.patch.object(graph, "_invoke_product_agent", AsyncMock(return_value={}))
 
     assert (await graph.product_node({"input": "Find a coffee grinder"})) == {
-        "response": "I apologize, but I'm having trouble generating a response at the moment."
+        "response": "I apologize, but I'm having trouble generating a response at the moment.",
+        "tool_calls": [],
     }
 
 # Tests live LLM classification (requires a real GOOGLE_API_KEY)
